@@ -9,7 +9,6 @@ class User(AbstractUser):
         ('customer', 'Customer'),
     )
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='customer')
-    # Add extra fields if needed
 
 class Tool(models.Model):
     STATUS_CHOICES = (
