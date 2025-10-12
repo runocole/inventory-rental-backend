@@ -1,15 +1,46 @@
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 import uuid
+from django.conf import settings
+from django.dispatch import receiver
+from django.db.models.signals import post_save
+# --- Existing User Manager ---
+class UserManager(BaseUserManager):
+    def create_user(self, email, password=None, **extra_fields):
+        if not email:
+            raise ValueError('Email is required')
+        email = self.normalize_email(email)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save()
+        return user
 
-class User(AbstractUser):
-    ROLE_CHOICES = (
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        return self.create_user(email, password, **extra_fields)
+
+# --- Existing User Model ---
+class User(AbstractBaseUser, PermissionsMixin):
+    email = models.EmailField(unique=True)
+    role = models.CharField(max_length=10, choices=[
         ('admin', 'Admin'),
         ('staff', 'Staff'),
         ('customer', 'Customer'),
-    )
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='customer')
+    ], default='customer')
 
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = []
+
+    objects = UserManager()
+
+    def __str__(self):
+        return self.email
+
+# --- Existing Models ---
 class Tool(models.Model):
     STATUS_CHOICES = (
         ('available', 'Available'),
@@ -24,6 +55,7 @@ class Tool(models.Model):
     price_per_day = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     is_enabled = models.BooleanField(default=True)
+
 
 class Rental(models.Model):
     STATUS_CHOICES = (
@@ -40,6 +72,7 @@ class Rental(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     settled = models.BooleanField(default=False)
 
+
 class Payment(models.Model):
     STATUS_CHOICES = (
         ('pending', 'Pending'),
@@ -53,8 +86,50 @@ class Payment(models.Model):
     raw_payload = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['username']  # username is still required but not for login
-    
     def __str__(self):
-        return self.email
+        return f"{self.reference} - {self.status}"
+
+
+class Sale(models.Model):
+    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'customer'})
+    equipment = models.CharField(max_length=255)
+    cost_sold = models.DecimalField(max_digits=10, decimal_places=2)
+    date_sold = models.DateField()
+    invoice_number = models.CharField(max_length=100, unique=True)
+    payment_plan = models.CharField(max_length=100, blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+    state = models.CharField(max_length=100, blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.customer.email} - {self.equipment}"
+
+class Customer(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="customer",
+        null=True,
+        blank=True,
+    )
+    name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=20)
+    email = models.EmailField(blank=True, null=True)
+    is_activated = models.BooleanField(default=False)
+
+    def __str__(self):
+        return self.name or "Unnamed Customer"
+
+
+# --- SIGNALS ---
+@receiver(post_save, sender=Customer)
+def create_user_for_customer(sender, instance, created, **kwargs):
+    """Auto-create and link a User when a Customer is created."""
+    if created and not instance.user:
+        user = User.objects.create_user(
+            email=instance.email or f"{instance.phone}@example.com",
+            password="defaultpass123",
+            role="customer"
+        )
+        instance.user = user
+        instance.save()

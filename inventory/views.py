@@ -5,16 +5,59 @@ from .serializers import UserSerializer, ToolSerializer, RentalSerializer, Payme
 from .permissions import IsAdminOrStaff, IsCustomer, IsOwnerOrAdmin
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.response import Response
+from .models import Tool, Rental, Payment
+from .serializers import UserSerializer, ToolSerializer, RentalSerializer, PaymentSerializer
+from .models import Sale, Customer
+from .serializers import SaleSerializer, CustomerSerializer
 
-
+# ---- Auth ----
+import secrets
+from django.core.mail import send_mail
 
 User = get_user_model()
 
-# ---- Auth ----
-class RegisterView(generics.CreateAPIView):
+
+class RegisterView(generics.ListCreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Only admins can see all users, customers see only themselves
+        user = self.request.user
+        if user.role in ["admin", "staff"]:
+            return User.objects.all()
+        return User.objects.filter(id=user.id)
+
+    def post(self, request, *args, **kwargs):
+        email = request.data.get("email")
+        role = request.data.get("role", "customer")
+
+        if not email:
+            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(email=email).exists():
+            return Response({"error": "A user with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        random_password = secrets.token_urlsafe(10)
+        user = User.objects.create_user(email=email, password=random_password, role=role)
+
+        try:
+            send_mail(
+                subject="Your Inventory Rental Account Password",
+                message=f"Hello, your account has been created.\n\nEmail: {email}\nPassword: {random_password}\n\nPlease log in and change your password.",
+                from_email="noreply@inventoryrental.com",
+                recipient_list=[email],
+                fail_silently=True,
+            )
+        except Exception as e:
+            print("Email send failed:", e)
+
+        return Response(
+            {"message": "Customer created successfully.", "email": email, "password": random_password},
+            status=status.HTTP_201_CREATED
+        )
+
 
 class EmailLoginView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
@@ -36,6 +79,49 @@ class EmailLoginView(generics.GenericAPIView):
             {'error': 'Invalid credentials'}, 
             status=status.HTTP_400_BAD_REQUEST
         )
+
+# customers/views.py
+import random, string
+from django.core.mail import send_mail
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.contrib.auth import get_user_model
+from .models import Customer
+
+User = get_user_model()
+
+@api_view(['POST'])
+def activate_customer(request, pk):
+    try:
+        customer = Customer.objects.get(pk=pk)
+        if customer.is_activated:
+            return Response({"detail": "Customer already activated."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Generate random password
+        password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+
+        # Update user password
+        user = customer.user
+        user.set_password(password)
+        user.save()
+
+        # Mark activated
+        customer.is_activated = True
+        customer.save()
+
+        # Send email
+        send_mail(
+            "Your Account Has Been Activated",
+            f"Hello {customer.name},\n\nYour account has been activated.\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
+            "no-reply@yourapp.com",
+            [customer.email],
+            fail_silently=False,
+        )
+
+        return Response({"detail": "Customer activated and email sent."}, status=status.HTTP_200_OK)
+    except Customer.DoesNotExist:
+        return Response({"detail": "Customer not found."}, status=status.HTTP_404_NOT_FOUND)
 
 # ---- Tools ----
 class ToolListCreateView(generics.ListCreateAPIView):
@@ -96,3 +182,85 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [IsOwnerOrAdmin]
+
+class SaleListCreateView(generics.ListCreateAPIView):
+    queryset = Sale.objects.all()
+    serializer_class = SaleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role in ["admin", "staff"]:
+            return Sale.objects.all()
+        return Sale.objects.filter(customer=user)
+
+    def perform_create(self, serializer):
+        serializer.save(customer=self.request.user)
+
+class CustomerListCreateView(generics.ListCreateAPIView):
+    queryset = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        customer = serializer.save()
+
+        # If customer isn't linked to a user, create and link automatically
+        if not customer.user:
+            user = User.objects.create_user(
+                email=customer.email,
+                password=secrets.token_urlsafe(10),  # random secure password
+                role='customer',
+                is_active=False  # not active until activation
+            )
+            customer.user = user
+            customer.save()
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+from .models import Customer
+from django.core.mail import send_mail
+import random, string
+
+
+class ActivateCustomerView(APIView):
+    def post(self, request, pk):
+        customer = get_object_or_404(Customer, pk=pk)
+
+        if customer.is_activated:
+            return Response({"detail": "Customer already activated."}, status=400)
+
+        try:
+            user = customer.user
+            if not user:
+                return Response({"detail": "No linked user found for this customer."}, status=400)
+
+            # Generate random password
+            password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+
+            # Activate user
+            user.set_password(password)
+            user.is_active = True
+            user.save()
+
+            # Activate customer
+            customer.is_activated = True
+            customer.save()
+
+            # Send email using Gmail SMTP
+            send_mail(
+                subject="Your Account Has Been Activated",
+                message=f"Hello {customer.name},\n\nYour account has been activated.\n\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
+                from_email="runocole@gmail.com",
+                recipient_list=[customer.email],
+                fail_silently=False,
+            )
+
+            return Response({"detail": "Customer activated and email sent."}, status=200)
+
+        except Exception as e:
+            print("Activation failed:", e)
+            return Response({"detail": f"Activation failed: {str(e)}"}, status=500)

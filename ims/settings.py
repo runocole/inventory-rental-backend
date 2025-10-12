@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'inventory',
+    'django_extensions',
 ]
 
 MIDDLEWARE = [
@@ -154,10 +155,11 @@ INSTALLED_APPS += ['corsheaders']
 MIDDLEWARE = ['corsheaders.middleware.CorsMiddleware'] + MIDDLEWARE
 CORS_ALLOW_ALL_ORIGINS = True  # For development; restrict in production
 
-# Email settings (for reminders)
+# For production using Gmail SMTP:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.example.com'      # Change to your SMTP server
+EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'your@email.com'
-EMAIL_HOST_PASSWORD = 'yourpassword'
+EMAIL_HOST_USER = 'runocole@gmail.com'
+EMAIL_HOST_PASSWORD = 'yocg yqgi mrna nnrx'
+DEFAULT_FROM_EMAIL = 'runocole@gmail.com'
