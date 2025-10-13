@@ -4,6 +4,7 @@ import uuid
 from django.conf import settings
 from django.dispatch import receiver
 from django.db.models.signals import post_save
+
 # --- Existing User Manager ---
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -40,7 +41,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
-# --- Existing Models ---
 class Tool(models.Model):
     STATUS_CHOICES = (
         ('available', 'Available'),
@@ -52,7 +52,7 @@ class Tool(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     code = models.CharField(max_length=100, unique=True)
-    price_per_day = models.DecimalField(max_digits=10, decimal_places=2)
+    cost = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     is_enabled = models.BooleanField(default=True)
 
