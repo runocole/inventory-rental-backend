@@ -1,11 +1,10 @@
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
-import uuid
 from django.conf import settings
 from django.dispatch import receiver
 from django.db.models.signals import post_save
+import uuid
 
-# --- Existing User Manager ---
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
@@ -21,7 +20,6 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault('is_superuser', True)
         return self.create_user(email, password, **extra_fields)
 
-# --- Existing User Model ---
 class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=10, choices=[
@@ -29,7 +27,6 @@ class User(AbstractBaseUser, PermissionsMixin):
         ('staff', 'Staff'),
         ('customer', 'Customer'),
     ], default='customer')
-
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
 
@@ -40,6 +37,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
 
 class Tool(models.Model):
     STATUS_CHOICES = (
@@ -55,6 +53,9 @@ class Tool(models.Model):
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     is_enabled = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
 
 
 class Rental(models.Model):
@@ -92,17 +93,19 @@ class Payment(models.Model):
 
 class Sale(models.Model):
     customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'customer'})
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=20)
+    state = models.CharField(max_length=100)
     equipment = models.CharField(max_length=255)
     cost_sold = models.DecimalField(max_digits=10, decimal_places=2)
     date_sold = models.DateField()
     invoice_number = models.CharField(max_length=100, unique=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
-    state = models.CharField(max_length=100, blank=True, null=True)
-    phone = models.CharField(max_length=20, blank=True, null=True)
 
     def __str__(self):
-        return f"{self.customer.email} - {self.equipment}"
+        return f"{self.name} - {self.equipment}"
+
 
 class Customer(models.Model):
     user = models.OneToOneField(
@@ -121,15 +124,14 @@ class Customer(models.Model):
         return self.name or "Unnamed Customer"
 
 
-# --- SIGNALS ---
 @receiver(post_save, sender=Customer)
 def create_user_for_customer(sender, instance, created, **kwargs):
-    """Auto-create and link a User when a Customer is created."""
     if created and not instance.user:
         user = User.objects.create_user(
             email=instance.email or f"{instance.phone}@example.com",
             password="defaultpass123",
-            role="customer"
+            role="customer",
+            is_active=False
         )
         instance.user = user
         instance.save()

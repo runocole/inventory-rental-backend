@@ -1,18 +1,18 @@
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
-from .models import Tool, Rental, Payment
-from .serializers import UserSerializer, ToolSerializer, RentalSerializer, PaymentSerializer
+from .models import Tool, Rental, Payment,  Sale, Customer
+from .serializers import UserSerializer, ToolSerializer, RentalSerializer, PaymentSerializer,  SaleSerializer, CustomerSerializer
 from .permissions import IsAdminOrStaff, IsCustomer, IsOwnerOrAdmin
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.response import Response
-from .models import Tool, Rental, Payment
-from .serializers import UserSerializer, ToolSerializer, RentalSerializer, PaymentSerializer
-from .models import Sale, Customer
-from .serializers import SaleSerializer, CustomerSerializer
+import random, string
+from django.core.mail import send_mail
+from rest_framework.decorators import api_view
+from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
 
 # ---- Auth ----
 import secrets
-from django.core.mail import send_mail
 
 User = get_user_model()
 
@@ -80,17 +80,6 @@ class EmailLoginView(generics.GenericAPIView):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-# customers/views.py
-import random, string
-from django.core.mail import send_mail
-from rest_framework import status
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.contrib.auth import get_user_model
-from .models import Customer
-
-User = get_user_model()
-
 @api_view(['POST'])
 def activate_customer(request, pk):
     try:
@@ -124,23 +113,18 @@ def activate_customer(request, pk):
         return Response({"detail": "Customer not found."}, status=status.HTTP_404_NOT_FOUND)
 
 # ---- Tools ----
+from rest_framework.permissions import AllowAny
 class ToolListCreateView(generics.ListCreateAPIView):
     queryset = Tool.objects.all()
     serializer_class = ToolSerializer
+    permission_classes = [permissions.AllowAny]  # <-- open access
 
-    def get_permissions(self):
-        if self.request.method in ["POST", "PUT", "PATCH", "DELETE"]:
-            return [IsAdminOrStaff()]
-        return [permissions.IsAuthenticated()]
-
+# Retrieve, update, delete a single tool
 class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Tool.objects.all()
     serializer_class = ToolSerializer
+    permission_classes = [permissions.AllowAny]  # <-- open access for dev
 
-    def get_permissions(self):
-        if self.request.method in ["PUT", "PATCH", "DELETE"]:
-            return [IsAdminOrStaff()]
-        return [permissions.IsAuthenticated()]
 
 #  ---- Rentals ----
 class RentalListCreateView(generics.ListCreateAPIView):
@@ -195,7 +179,13 @@ class SaleListCreateView(generics.ListCreateAPIView):
         return Sale.objects.filter(customer=user)
 
     def perform_create(self, serializer):
-        serializer.save(customer=self.request.user)
+        user = self.request.user
+        if user.role == "customer":
+            serializer.save(customer=user)
+        else:
+            # Admin/staff can manually assign a customer
+            serializer.save()
+
 
 class CustomerListCreateView(generics.ListCreateAPIView):
     queryset = Customer.objects.all()
@@ -215,16 +205,6 @@ class CustomerListCreateView(generics.ListCreateAPIView):
             )
             customer.user = user
             customer.save()
-
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404
-from .models import Customer
-from django.core.mail import send_mail
-import random, string
-
 
 class ActivateCustomerView(APIView):
     def post(self, request, pk):
