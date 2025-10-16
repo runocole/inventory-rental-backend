@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import (
-    EmailLoginView,  AddStaffView, StaffListView, ActivateStaffView,
+    EmailLoginView,  AddStaffView, StaffListView,
     ToolListCreateView, ToolDetailView,
     RentalListCreateView, RentalDetailView,
     SaleListCreateView, SaleDetailView,
@@ -13,7 +13,6 @@ urlpatterns = [
     path('auth/login/', EmailLoginView.as_view(), name='login'),
     path('auth/add-staff/', AddStaffView.as_view(), name='add-staff'),
     path('auth/staff/', StaffListView.as_view(), name='staff-list'),
-    path('auth/staff/<int:pk>/activate/', ActivateStaffView.as_view(), name='activate-staff'),
     # Tools
     path('tools/', ToolListCreateView.as_view(), name='tools'),
     path('tools/<uuid:pk>/', ToolDetailView.as_view(), name='tool-detail'),

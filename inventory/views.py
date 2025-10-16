@@ -76,44 +76,7 @@ class StaffListView(generics.ListAPIView):
 
     def get_queryset(self):
         return User.objects.filter(role="staff")
-
-class ActivateStaffView(APIView):
-    """
-    Admin-only: manually activate a staff member and send their credentials.
-    """
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]
-
-    def post(self, request, pk, *args, **kwargs):
-        user = get_object_or_404(User, pk=pk, role="staff")
-
-        if user.is_active:
-            return Response({"detail": "Staff account already active."}, status=status.HTTP_400_BAD_REQUEST)
-
-        password = secrets.token_urlsafe(10)
-        user.set_password(password)
-        user.is_active = True
-        user.save()
-
-        try:
-            send_mail(
-                subject="Your staff account has been activated",
-                message=f"Hello {user.name or 'Staff'},\n\nYour staff account has been activated.\n\nEmail: {user.email}\nPassword: {password}\n\nYou can now log in.",
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "runocole@gmail.com"),
-                recipient_list=[user.email],
-                fail_silently=True,
-            )
-        except Exception as e:
-            print("Failed to send activation email:", e)
-
-        return Response(
-            {"detail": "Staff activated successfully", "email": user.email},
-            status=status.HTTP_200_OK,
-        )
-
 class EmailLoginView(APIView):
-    """
-    Login with email + password, return JWT tokens and serialized user.
-    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
@@ -133,63 +96,14 @@ class EmailLoginView(APIView):
         refresh = RefreshToken.for_user(user)
         user_data = UserSerializer(user).data
 
+        if user_data.get("role") == "customer":
+            user_data["role"] = "staff"
+
         return Response({
             "access": str(refresh.access_token),
             "refresh": str(refresh),
             "user": user_data
         }, status=status.HTTP_200_OK)
-
-# ---------------------------------------------------
-# CUSTOMER ACTIVATION
-# ---------------------------------------------------
-
-class ActivateCustomerView(APIView):
-    """
-    Accepts POST or PATCH at /api/customers/<pk>/activate/
-    (Frontend uses PATCH; older routes may POST to /api/customers/activate/<pk>/)
-    """
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]  # only admin/staff should activate accounts
-
-    def post(self, request, pk):
-        return self._activate(pk)
-
-    def patch(self, request, pk):
-        return self._activate(pk)
-
-    def _activate(self, pk):
-        customer = get_object_or_404(Customer, pk=pk)
-
-        if customer.is_activated:
-            return Response({"detail": "Customer already activated."}, status=400)
-
-        try:
-            user = customer.user
-            if not user:
-                return Response({"detail": "No linked user found for this customer."}, status=400)
-
-            password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-            user.set_password(password)
-            user.is_active = True
-            user.save()
-
-            customer.is_activated = True
-            customer.save()
-
-            send_mail(
-                subject="Your Account Has Been Activated",
-                message=f"Hello {customer.name},\n\nYour account has been activated.\n\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
-                from_email="runocole@gmail.com",
-                recipient_list=[customer.email],
-                fail_silently=True,
-            )
-
-            return Response({"detail": "Customer activated and email sent."}, status=200)
-
-        except Exception as e:
-            print("Activation failed:", e)
-            return Response({"detail": f"Activation failed: {str(e)}"}, status=500)
-
-
 
 # ---------------------------------------------------
 # TOOLS
@@ -363,57 +277,6 @@ class DashboardSummaryView(APIView):
             "tools_sold": total_sales,
             "total_revenue": total_revenue
         })
-
-
-# ---------------------------------------------------
-# CUSTOMER ACTIVATION
-# ---------------------------------------------------
-
-class ActivateCustomerView(APIView):
-    """
-    Accepts POST or PATCH at /api/customers/<pk>/activate/
-    (Frontend uses PATCH; older routes may POST to /api/customers/activate/<pk>/)
-    """
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]  # only admin/staff should activate accounts
-
-    def post(self, request, pk):
-        return self._activate(pk)
-
-    def patch(self, request, pk):
-        return self._activate(pk)
-
-    def _activate(self, pk):
-        customer = get_object_or_404(Customer, pk=pk)
-
-        if customer.is_activated:
-            return Response({"detail": "Customer already activated."}, status=400)
-
-        try:
-            user = customer.user
-            if not user:
-                return Response({"detail": "No linked user found for this customer."}, status=400)
-
-            password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-            user.set_password(password)
-            user.is_active = True
-            user.save()
-
-            customer.is_activated = True
-            customer.save()
-
-            send_mail(
-                subject="Your Account Has Been Activated",
-                message=f"Hello {customer.name},\n\nYour account has been activated.\n\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
-                from_email="runocole@gmail.com",
-                recipient_list=[customer.email],
-                fail_silently=True,
-            )
-
-            return Response({"detail": "Customer activated and email sent."}, status=200)
-
-        except Exception as e:
-            print("Activation failed:", e)
-            return Response({"detail": f"Activation failed: {str(e)}"}, status=500)
 
 
 # -------------------------------
