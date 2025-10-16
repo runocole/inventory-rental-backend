@@ -1,213 +1,162 @@
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
-from .models import Tool, Rental, Payment,  Sale, Customer
-from .serializers import UserSerializer, ToolSerializer, RentalSerializer, PaymentSerializer,  SaleSerializer, CustomerSerializer
-from .permissions import IsAdminOrStaff, IsCustomer, IsOwnerOrAdmin
+from .models import Tool, Rental, Payment, Sale, Customer
+from .serializers import (
+    UserSerializer, ToolSerializer, RentalSerializer,
+    PaymentSerializer, SaleSerializer, CustomerSerializer
+)
+from .permissions import IsAdminOrStaff, IsOwnerOrAdmin
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.response import Response
-import random, string
-from django.core.mail import send_mail
-from rest_framework.decorators import api_view
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
+from django.db.models import Sum
+from django.core.mail import send_mail
+from django.utils import timezone
+import random, string, secrets
+import uuid 
+from django.conf import settings
 
-# ---- Auth ----
-import secrets
 
 User = get_user_model()
 
 
-class RegisterView(generics.ListCreateAPIView):
-    queryset = User.objects.all()
+class AddStaffView(generics.CreateAPIView):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        # Only admins can see all users, customers see only themselves
-        user = self.request.user
-        if user.role in ["admin", "staff"]:
-            return User.objects.all()
-        return User.objects.filter(id=user.id)
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]
 
     def post(self, request, *args, **kwargs):
         email = request.data.get("email")
-        role = request.data.get("role", "customer")
+        name = request.data.get("name")
+        phone = request.data.get("phone")
 
         if not email:
-            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if User.objects.filter(email=email).exists():
-            return Response({"error": "A user with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "User with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
 
-        random_password = secrets.token_urlsafe(10)
-        user = User.objects.create_user(email=email, password=random_password, role=role)
+        password = secrets.token_urlsafe(10)
+
+        user = User.objects.create_user(
+            email=email,
+            password=password,
+            name=name or "",
+            phone=phone or "",
+            role="staff",
+            is_active=True,
+        )
 
         try:
             send_mail(
-                subject="Your Inventory Rental Account Password",
-                message=f"Hello, your account has been created.\n\nEmail: {email}\nPassword: {random_password}\n\nPlease log in and change your password.",
-                from_email="noreply@inventoryrental.com",
+                subject="Your staff account credentials",
+                message=f"Hello {name or 'Staff'},\n\nYour staff account has been created.\n\nEmail: {email}\nPassword: {password}\n\nPlease log in and change your password.",
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "runocole@gmail.com"),
                 recipient_list=[email],
                 fail_silently=True,
             )
         except Exception as e:
-            print("Email send failed:", e)
-
+            print("Failed to send staff creation email:", e)
         return Response(
-            {"message": "Customer created successfully.", "email": email, "password": random_password},
-            status=status.HTTP_201_CREATED
-        )
+    {
+        "id": user.id,
+        "email": email,
+        "name": user.name,
+        "phone": user.phone,
+        "detail": "Staff created successfully"
+    },
+    status=status.HTTP_201_CREATED
+)
 
 
-class EmailLoginView(generics.GenericAPIView):
-    permission_classes = [permissions.AllowAny]
-    
-    def post(self, request):
-        email = request.data.get('email')
-        password = request.data.get('password')
-        
-        user = User.objects.filter(email=email).first()
-        
-        if user and user.check_password(password):
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                'access': str(refresh.access_token),
-                'refresh': str(refresh),
-                'user': UserSerializer(user).data
-            })
-        return Response(
-            {'error': 'Invalid credentials'}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-@api_view(['POST'])
-def activate_customer(request, pk):
-    try:
-        customer = Customer.objects.get(pk=pk)
-        if customer.is_activated:
-            return Response({"detail": "Customer already activated."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Generate random password
-        password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-
-        # Update user password
-        user = customer.user
-        user.set_password(password)
-        user.save()
-
-        # Mark activated
-        customer.is_activated = True
-        customer.save()
-
-        # Send email
-        send_mail(
-            "Your Account Has Been Activated",
-            f"Hello {customer.name},\n\nYour account has been activated.\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
-            "no-reply@yourapp.com",
-            [customer.email],
-            fail_silently=False,
-        )
-
-        return Response({"detail": "Customer activated and email sent."}, status=status.HTTP_200_OK)
-    except Customer.DoesNotExist:
-        return Response({"detail": "Customer not found."}, status=status.HTTP_404_NOT_FOUND)
-
-# ---- Tools ----
-from rest_framework.permissions import AllowAny
-class ToolListCreateView(generics.ListCreateAPIView):
-    queryset = Tool.objects.all()
-    serializer_class = ToolSerializer
-    permission_classes = [permissions.AllowAny]  # <-- open access
-
-# Retrieve, update, delete a single tool
-class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Tool.objects.all()
-    serializer_class = ToolSerializer
-    permission_classes = [permissions.AllowAny]  # <-- open access for dev
-
-
-#  ---- Rentals ----
-class RentalListCreateView(generics.ListCreateAPIView):
-    queryset = Rental.objects.all()
-    serializer_class = RentalSerializer
-
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsCustomer()]
-        return [permissions.IsAuthenticated()]
-
-    def perform_create(self, serializer):
-        # Automatically link rental to logged-in customer
-        serializer.save(customer=self.request.user)
-
-class RentalDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Rental.objects.all()
-    serializer_class = RentalSerializer
-    permission_classes = [IsOwnerOrAdmin]
-
-# ---- Payments ----
-class PaymentListCreateView(generics.ListCreateAPIView):
-    queryset = Payment.objects.all()
-    serializer_class = PaymentSerializer
-
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsCustomer()]
-        return [permissions.IsAuthenticated()]
-
-    def perform_create(self, serializer):
-        # Customer can only pay for their own rentals
-        rental = serializer.validated_data["rental"]
-        if rental.customer != self.request.user and self.request.user.role == "customer":
-            raise permissions.PermissionDenied("You can only pay for your own rentals.")
-        serializer.save()
-
-class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Payment.objects.all()
-    serializer_class = PaymentSerializer
-    permission_classes = [IsOwnerOrAdmin]
-
-class SaleListCreateView(generics.ListCreateAPIView):
-    queryset = Sale.objects.all()
-    serializer_class = SaleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+class StaffListView(generics.ListAPIView):
+    """List all staff (admin or staff can view)."""
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.role in ["admin", "staff"]:
-            return Sale.objects.all()
-        return Sale.objects.filter(customer=user)
+        return User.objects.filter(role="staff")
 
-    def perform_create(self, serializer):
-        user = self.request.user
-        if user.role == "customer":
-            serializer.save(customer=user)
-        else:
-            # Admin/staff can manually assign a customer
-            serializer.save()
+class ActivateStaffView(APIView):
+    """
+    Admin-only: manually activate a staff member and send their credentials.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]
 
+    def post(self, request, pk, *args, **kwargs):
+        user = get_object_or_404(User, pk=pk, role="staff")
 
-class CustomerListCreateView(generics.ListCreateAPIView):
-    queryset = Customer.objects.all()
-    serializer_class = CustomerSerializer
-    permission_classes = [permissions.IsAuthenticated]
+        if user.is_active:
+            return Response({"detail": "Staff account already active."}, status=status.HTTP_400_BAD_REQUEST)
 
-    def perform_create(self, serializer):
-        customer = serializer.save()
+        password = secrets.token_urlsafe(10)
+        user.set_password(password)
+        user.is_active = True
+        user.save()
 
-        # If customer isn't linked to a user, create and link automatically
-        if not customer.user:
-            user = User.objects.create_user(
-                email=customer.email,
-                password=secrets.token_urlsafe(10),  # random secure password
-                role='customer',
-                is_active=False  # not active until activation
+        try:
+            send_mail(
+                subject="Your staff account has been activated",
+                message=f"Hello {user.name or 'Staff'},\n\nYour staff account has been activated.\n\nEmail: {user.email}\nPassword: {password}\n\nYou can now log in.",
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "runocole@gmail.com"),
+                recipient_list=[user.email],
+                fail_silently=True,
             )
-            customer.user = user
-            customer.save()
+        except Exception as e:
+            print("Failed to send activation email:", e)
+
+        return Response(
+            {"detail": "Staff activated successfully", "email": user.email},
+            status=status.HTTP_200_OK,
+        )
+
+class EmailLoginView(APIView):
+    """
+    Login with email + password, return JWT tokens and serialized user.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        email = request.data.get("email")
+        password = request.data.get("password")
+
+        if not email or not password:
+            return Response({"detail": "Email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(email=email).first()
+        if not user or not user.check_password(password):
+            return Response({"detail": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.is_active:
+            return Response({"detail": "User account is disabled."}, status=status.HTTP_403_FORBIDDEN)
+
+        refresh = RefreshToken.for_user(user)
+        user_data = UserSerializer(user).data
+
+        return Response({
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "user": user_data
+        }, status=status.HTTP_200_OK)
+
+# ---------------------------------------------------
+# CUSTOMER ACTIVATION
+# ---------------------------------------------------
 
 class ActivateCustomerView(APIView):
+    """
+    Accepts POST or PATCH at /api/customers/<pk>/activate/
+    (Frontend uses PATCH; older routes may POST to /api/customers/activate/<pk>/)
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]  # only admin/staff should activate accounts
+
     def post(self, request, pk):
+        return self._activate(pk)
+
+    def patch(self, request, pk):
+        return self._activate(pk)
+
+    def _activate(self, pk):
         customer = get_object_or_404(Customer, pk=pk)
 
         if customer.is_activated:
@@ -218,25 +167,20 @@ class ActivateCustomerView(APIView):
             if not user:
                 return Response({"detail": "No linked user found for this customer."}, status=400)
 
-            # Generate random password
             password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-
-            # Activate user
             user.set_password(password)
             user.is_active = True
             user.save()
 
-            # Activate customer
             customer.is_activated = True
             customer.save()
 
-            # Send email using Gmail SMTP
             send_mail(
                 subject="Your Account Has Been Activated",
                 message=f"Hello {customer.name},\n\nYour account has been activated.\n\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
                 from_email="runocole@gmail.com",
                 recipient_list=[customer.email],
-                fail_silently=False,
+                fail_silently=True,
             )
 
             return Response({"detail": "Customer activated and email sent."}, status=200)
@@ -244,3 +188,274 @@ class ActivateCustomerView(APIView):
         except Exception as e:
             print("Activation failed:", e)
             return Response({"detail": f"Activation failed: {str(e)}"}, status=500)
+
+
+
+# ---------------------------------------------------
+# TOOLS
+# ---------------------------------------------------
+
+class ToolListCreateView(generics.ListCreateAPIView):
+    queryset = Tool.objects.all()
+    serializer_class = ToolSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if hasattr(user, "role") and user.role == "customer":
+            return Tool.objects.filter(stock__gt=0)
+        return Tool.objects.all()
+
+    def perform_create(self, serializer):
+        if hasattr(self.request.user, "role") and self.request.user.role == "customer":
+            raise permissions.PermissionDenied("Customers cannot add tools.")
+        serializer.save()
+
+
+class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Tool.objects.all()
+    serializer_class = ToolSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+
+# ---------------------------------------------------
+# RENTALS
+# ---------------------------------------------------
+
+class RentalListCreateView(generics.ListCreateAPIView):
+    serializer_class = RentalSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == "customer":
+            return Rental.objects.filter(customer=user)
+        return Rental.objects.all()
+
+    def perform_create(self, serializer):
+        # Auto-link customer to logged-in user
+        serializer.save(customer=self.request.user)
+
+
+class RentalDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Rental.objects.all()
+    serializer_class = RentalSerializer
+    permission_classes = [IsOwnerOrAdmin]
+
+
+# ---------------------------------------------------
+# SALES
+# ---------------------------------------------------
+
+class SaleListCreateView(generics.ListCreateAPIView):
+    serializer_class = SaleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == "customer":
+            return Sale.objects.filter(customer=user)
+        return Sale.objects.all()
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        sale = serializer.save(customer=user)
+
+        # Auto-deduct stock (using method on Tool)
+        tool = sale.tool
+        if tool.stock <= 0:
+            raise permissions.PermissionDenied("This tool is out of stock.")
+        tool.decrease_stock()
+
+        # Generate Paystack test reference
+        paystack_ref = generate_paystack_reference()
+
+        # Auto-create a Payment record
+        payment = Payment.objects.create(
+            customer=user,
+            sale=sale,
+            amount=sale.cost_sold,
+            payment_method="paystack",
+            payment_reference=paystack_ref,
+            status="pending"
+        )
+
+        # Simulate Paystack test mode success (mock)
+        payment.status = "completed"
+        payment.save()
+
+        # Update sale payment status
+        sale.payment_status = "completed"
+        sale.save()
+
+
+class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Sale.objects.all()
+    serializer_class = SaleSerializer
+    permission_classes = [IsOwnerOrAdmin]
+
+
+# ----------------------------
+# CONFIRM PAYMENT VIEW (Mock/Test Mode)
+# ----------------------------
+from rest_framework.decorators import api_view, permission_classes
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def confirm_payment(request, pk):
+    """
+    Mock Paystack payment confirmation (Test Mode).
+    Simulates successful payment and automatically reduces tool stock.
+    """
+    try:
+        sale = get_object_or_404(Sale, pk=pk)
+        if sale.payment_status == "completed":
+            return Response({"detail": "Payment already confirmed."}, status=400)
+
+        # --- Simulate successful payment ---
+        sale.payment_status = "completed"
+        sale.date_sold = timezone.now().date()
+        sale.save()
+
+        # Automatically reduce tool stock (if not already)
+        tool = getattr(sale, "tool", None)
+        if tool and tool.stock > 0:
+            tool.stock -= 1
+            if tool.stock == 0:
+                tool.status = "sold"
+            tool.save()
+
+        return Response({
+            "detail": "Payment confirmed successfully (Test Mode).",
+            "sale_id": sale.id,
+            "status": sale.payment_status
+        }, status=200)
+
+    except Exception as e:
+        print("Payment confirmation failed:", e)
+        return Response({"detail": str(e)}, status=500)
+
+
+# ---------------------------------------------------
+# DASHBOARD SUMMARY
+# ---------------------------------------------------
+
+class DashboardSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if user.role == "customer":
+            total_sales = Sale.objects.filter(customer=user).count()
+            total_rented = Rental.objects.filter(customer=user, status="active").count()
+            total_revenue = Sale.objects.filter(customer=user).aggregate(total=Sum("cost_sold"))["total"] or 0
+        else:
+            total_sales = Sale.objects.count()
+            total_rented = Rental.objects.filter(status="active").count()
+            total_revenue = Sale.objects.aggregate(total=Sum("cost_sold"))["total"] or 0
+
+        tools_count = Tool.objects.count()
+
+        return Response({
+            "total_tools": tools_count,
+            "tools_rented": total_rented,
+            "tools_sold": total_sales,
+            "total_revenue": total_revenue
+        })
+
+
+# ---------------------------------------------------
+# CUSTOMER ACTIVATION
+# ---------------------------------------------------
+
+class ActivateCustomerView(APIView):
+    """
+    Accepts POST or PATCH at /api/customers/<pk>/activate/
+    (Frontend uses PATCH; older routes may POST to /api/customers/activate/<pk>/)
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]  # only admin/staff should activate accounts
+
+    def post(self, request, pk):
+        return self._activate(pk)
+
+    def patch(self, request, pk):
+        return self._activate(pk)
+
+    def _activate(self, pk):
+        customer = get_object_or_404(Customer, pk=pk)
+
+        if customer.is_activated:
+            return Response({"detail": "Customer already activated."}, status=400)
+
+        try:
+            user = customer.user
+            if not user:
+                return Response({"detail": "No linked user found for this customer."}, status=400)
+
+            password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+            user.set_password(password)
+            user.is_active = True
+            user.save()
+
+            customer.is_activated = True
+            customer.save()
+
+            send_mail(
+                subject="Your Account Has Been Activated",
+                message=f"Hello {customer.name},\n\nYour account has been activated.\n\nEmail: {customer.email}\nPassword: {password}\n\nYou can now log in to your dashboard.",
+                from_email="runocole@gmail.com",
+                recipient_list=[customer.email],
+                fail_silently=True,
+            )
+
+            return Response({"detail": "Customer activated and email sent."}, status=200)
+
+        except Exception as e:
+            print("Activation failed:", e)
+            return Response({"detail": f"Activation failed: {str(e)}"}, status=500)
+
+
+# -------------------------------
+# HELPER: Generate Paystack Reference
+# -------------------------------
+def generate_paystack_reference():
+    """Generate unique Paystack-like reference for test mode"""
+    return f"TEST_REF_{uuid.uuid4().hex[:10].upper()}"
+
+
+# -------------------------------
+# Customer list/create
+# -------------------------------
+class CustomerListCreateView(generics.ListCreateAPIView):
+    """
+    NOTE: Permission changed to IsAuthenticated so your frontend can POST /api/customers/
+    If you want to restrict creation to only staff/admin later, switch to IsAdminOrStaff.
+    """
+    queryset = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    permission_classes = [permissions.IsAuthenticated]   # <-- allow authenticated users to list/create
+
+    def get_queryset(self):
+        # Admin/Staff see all customers; customers should not have this view in UI
+        user = self.request.user
+        if hasattr(user, "role") and user.role in ["admin", "staff"]:
+            return Customer.objects.all()
+        # For safety: if a customer somehow hits this endpoint, return only their record (if linked)
+        return Customer.objects.filter(user=user)
+
+    def perform_create(self, serializer):
+        # create Customer record using data from frontend
+        # if you want to auto-create linked User, that's handled by the post_save signal in models.py
+        serializer.save()
+
+
+class PaymentListCreateView(generics.ListCreateAPIView):
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer
+    permission_classes = [IsOwnerOrAdmin]

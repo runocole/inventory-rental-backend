@@ -1,25 +1,48 @@
-from rest_framework import permissions
+from rest_framework.permissions import BasePermission, SAFE_METHODS
 
-class IsAdminOrStaff(permissions.BasePermission):
-    """
-    Only admins or staff can access
-    """
+
+class IsAdmin(BasePermission):
+    """Allows access only to admin (superuser or is_staff=True)."""
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ["admin", "staff"]
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and (request.user.is_staff or request.user.is_superuser)
+        )
 
-class IsCustomer(permissions.BasePermission):
-    """
-    Only customers can access
-    """
+
+class IsAdminOrStaff(BasePermission):
+    """Allows both admin and staff to access."""
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == "customer"
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and (request.user.is_staff or request.user.is_superuser)
+        )
 
-class IsOwnerOrAdmin(permissions.BasePermission):
-    """
-    Customers can only access their own records.
-    Admin/Staff can access all.
-    """
+
+class IsStaffOrReadOnly(BasePermission):
+    """Allows staff to edit, but anyone authenticated can view."""
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return bool(request.user and request.user.is_authenticated)
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and (request.user.is_staff or request.user.is_superuser)
+        )
+
+
+class IsOwnerOrAdmin(BasePermission):
+    """Allows access to object owners or admin users."""
     def has_object_permission(self, request, view, obj):
-        if request.user.role in ["admin", "staff"]:
+        if request.user and (request.user.is_staff or request.user.is_superuser):
             return True
-        return obj.customer == request.user
+        return obj == request.user
+
+
+class IsAuthenticatedUser(BasePermission):
+    """Basic permission — just ensure the user is logged in."""
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)

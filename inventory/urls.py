@@ -1,33 +1,38 @@
 from django.urls import path
 from .views import (
-    RegisterView, EmailLoginView,
+    EmailLoginView,  AddStaffView, StaffListView, ActivateStaffView,
     ToolListCreateView, ToolDetailView,
     RentalListCreateView, RentalDetailView,
-    SaleListCreateView, CustomerListCreateView, ActivateCustomerView,
-    PaymentListCreateView, PaymentDetailView
+    SaleListCreateView, SaleDetailView,
+    PaymentListCreateView, PaymentDetailView,
+    confirm_payment, DashboardSummaryView
 )
 
 urlpatterns = [
-    # Auth
-    path('auth/register/', RegisterView.as_view(), name='register'),
+    # Auth & Staff
     path('auth/login/', EmailLoginView.as_view(), name='login'),
-
+    path('auth/add-staff/', AddStaffView.as_view(), name='add-staff'),
+    path('auth/staff/', StaffListView.as_view(), name='staff-list'),
+    path('auth/staff/<int:pk>/activate/', ActivateStaffView.as_view(), name='activate-staff'),
     # Tools
     path('tools/', ToolListCreateView.as_view(), name='tools'),
     path('tools/<uuid:pk>/', ToolDetailView.as_view(), name='tool-detail'),
 
     # Rentals
     path('rentals/', RentalListCreateView.as_view(), name='rentals'),
-    path('rentals/<uuid:pk>/', RentalDetailView.as_view(), name='rental-detail'),
+    path('rentals/<int:pk>/', RentalDetailView.as_view(), name='rental-detail'),
 
     # Payments
     path('payments/', PaymentListCreateView.as_view(), name='payments'),
-    path('payments/<uuid:pk>/', PaymentDetailView.as_view(), name='payment-detail'),
+    path('payments/<int:pk>/', PaymentDetailView.as_view(), name='payment-detail'),
 
     # Sales
-    path('receiver-sales/', SaleListCreateView.as_view(), name='receiver_sales'),
+    path('sales/', SaleListCreateView.as_view(), name='sales'),
+    path('sales/<int:pk>/', SaleDetailView.as_view(), name='sale-detail'),
 
-    # ✅ Customers
-    path('customers/', CustomerListCreateView.as_view(), name='customer-list-create'),
-    path('customers/activate/<int:pk>/', ActivateCustomerView.as_view(), name='activate-customer'),
+    # Confirm payment (mock)
+    path('sales/<int:pk>/confirm-payment/', confirm_payment, name='confirm-payment'),
+
+    # Dashboard
+    path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
 ]
