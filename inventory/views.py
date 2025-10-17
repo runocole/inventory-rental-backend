@@ -254,7 +254,6 @@ def confirm_payment(request, pk):
 # ---------------------------------------------------
 # DASHBOARD SUMMARY
 # ---------------------------------------------------
-
 class DashboardSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -264,21 +263,47 @@ class DashboardSummaryView(APIView):
         if user.role == "customer":
             total_sales = Sale.objects.filter(customer=user).count()
             total_rented = Rental.objects.filter(customer=user, status="active").count()
-            total_revenue = Sale.objects.filter(customer=user).aggregate(total=Sum("cost_sold"))["total"] or 0
+            total_revenue = (
+                Sale.objects.filter(customer=user).aggregate(total=Sum("cost_sold"))["total"]
+                or 0
+            )
         else:
             total_sales = Sale.objects.count()
             total_rented = Rental.objects.filter(status="active").count()
             total_revenue = Sale.objects.aggregate(total=Sum("cost_sold"))["total"] or 0
 
         tools_count = Tool.objects.count()
+        staff_count = User.objects.filter(role="staff").count()
+        active_customers = Customer.objects.filter(is_activated=True).count()  # ✅ fixed here
 
-        return Response({
-            "total_tools": tools_count,
-            "tools_rented": total_rented,
-            "tools_sold": total_sales,
-            "total_revenue": total_revenue
-        })
+        # Compute month-to-date revenue (for MTD)
+        from django.utils import timezone
+        today = timezone.now()
+        month_start = today.replace(day=1)
+        mtd_revenue = (
+            Sale.objects.filter(date_sold__gte=month_start)
+            .aggregate(total=Sum("cost_sold"))
+            .get("total")
+            or 0
+        )
 
+        tool_status_counts = {
+            "available": Tool.objects.filter(status="available").count(),
+            "rented": Tool.objects.filter(status="rented").count(),
+            "maintenance": Tool.objects.filter(status="maintenance").count(),
+            "disabled": Tool.objects.filter(status="disabled").count(),
+            "sold": Tool.objects.filter(status="sold").count(),
+        }
+
+        return Response(
+            {
+                "totalTools": tools_count,
+                "totalStaff": staff_count,
+                "activeCustomers": active_customers,
+                "mtdRevenue": mtd_revenue,
+                "toolStatusCounts": tool_status_counts,
+            }
+        )
 
 # -------------------------------
 # HELPER: Generate Paystack Reference

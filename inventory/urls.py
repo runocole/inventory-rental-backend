@@ -5,7 +5,7 @@ from .views import (
     RentalListCreateView, RentalDetailView,
     SaleListCreateView, SaleDetailView,
     PaymentListCreateView, PaymentDetailView,
-    confirm_payment, DashboardSummaryView
+    confirm_payment, DashboardSummaryView, CustomerListCreateView
 )
 
 urlpatterns = [
@@ -13,6 +13,9 @@ urlpatterns = [
     path('auth/login/', EmailLoginView.as_view(), name='login'),
     path('auth/add-staff/', AddStaffView.as_view(), name='add-staff'),
     path('auth/staff/', StaffListView.as_view(), name='staff-list'),
+
+    #Customers
+    path('customers/', CustomerListCreateView.as_view(), name='customers'),
     # Tools
     path('tools/', ToolListCreateView.as_view(), name='tools'),
     path('tools/<uuid:pk>/', ToolDetailView.as_view(), name='tool-detail'),

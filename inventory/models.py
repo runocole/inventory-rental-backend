@@ -3,13 +3,12 @@ from django.db import models
 from django.conf import settings
 from django.dispatch import receiver
 from django.db.models.signals import post_save
-import uuid
-import random
-import string
+import uuid, random, string
 from datetime import date
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
-from django.db import models
 
+# ----------------------------
+#  USER
+# ----------------------------
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
@@ -36,6 +35,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = (
         ("admin", "Admin"),
         ("staff", "Staff"),
+        ("customer", "Customer"),
     )
 
     email = models.EmailField(unique=True)
@@ -55,7 +55,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 # ----------------------------
-#  Customers
+#  CUSTOMERS
 # ----------------------------
 class Customer(models.Model):
     user = models.OneToOneField(
@@ -82,32 +82,33 @@ def create_user_for_customer(sender, instance, created, **kwargs):
             email=instance.email or f"{instance.phone}@example.com",
             password="defaultpass123",
             role="customer",
-            is_active=False
+            is_active=False,
         )
         instance.user = user
         instance.save()
 
+
 # ----------------------------
-#  Tools
+#  TOOLS
 # ----------------------------
 class Tool(models.Model):
     STATUS_CHOICES = (
-        ('available', 'Available'),
-        ('rented', 'Rented'),
-        ('maintenance', 'Maintenance'),
-        ('disabled', 'Disabled'),
-        ('sold', 'Sold'),
+        ("available", "Available"),
+        ("rented", "Rented"),
+        ("maintenance", "Maintenance"),
+        ("disabled", "Disabled"),
+        ("sold", "Sold"),
     )
 
     CATEGORY_CHOICES = (
-        ('Receiver', 'Receiver'),
-        ('Base', 'Base'),
-        ('Rover', 'Rover'),
-        ('Accessory', 'Accessory'),
-        ('Power Tool', 'Power Tool'),
-        ('Measuring', 'Measuring'),
-        ('Safety Gear', 'Safety Gear'),
-        ('Other', 'Other'),
+        ("Receiver", "Receiver"),
+        ("Base", "Base"),
+        ("Rover", "Rover"),
+        ("Accessory", "Accessory"),
+        ("Power Tool", "Power Tool"),
+        ("Measuring", "Measuring"),
+        ("Safety Gear", "Safety Gear"),
+        ("Other", "Other"),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -118,7 +119,7 @@ class Tool(models.Model):
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.PositiveIntegerField(default=1)
     supplier = models.CharField(max_length=100, blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="available")
     is_enabled = models.BooleanField(default=True)
 
     def __str__(self):
@@ -136,29 +137,31 @@ class Tool(models.Model):
         if self.status == "sold":
             self.status = "available"
         self.save()
+
+
 # ----------------------------
-#  Rentals
+#  RENTALS
 # ----------------------------
 class Rental(models.Model):
     STATUS_CHOICES = (
-        ('active', 'Active'),
-        ('completed', 'Completed'),
-        ('overdue', 'Overdue'),
+        ("active", "Active"),
+        ("completed", "Completed"),
+        ("overdue", "Overdue"),
     )
+
     tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
-    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'customer'})
+    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={"role": "customer"})
     start_date = models.DateField()
     end_date = models.DateField()
     amount_due = models.DecimalField(max_digits=10, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
     settled = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.tool.name} rented by {self.customer.email}"
 
     def save(self, *args, **kwargs):
-        # On creation → reduce stock
         if not self.pk:
             if self.tool.stock > 0:
                 self.tool.stock -= 1
@@ -166,7 +169,6 @@ class Rental(models.Model):
                     self.tool.status = "rented"
                 self.tool.save()
         else:
-            # On update → if status changes to completed, restore stock
             old = Rental.objects.get(pk=self.pk)
             if old.status != self.status and self.status == "completed":
                 self.tool.stock += 1
@@ -178,16 +180,16 @@ class Rental(models.Model):
 
 
 # ----------------------------
-#  Sales
+#  SALES
 # ----------------------------
 class Sale(models.Model):
     PAYMENT_STATUS_CHOICES = (
-        ('pending', 'Pending'),
-        ('completed', 'Completed'),
-        ('failed', 'Failed'),
+        ("pending", "Pending"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
     )
 
-    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'customer'})
+    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={"role": "customer"})
     tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     phone = models.CharField(max_length=20)
@@ -198,7 +200,7 @@ class Sale(models.Model):
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
-    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending")
 
     def __str__(self):
         return f"{self.name} - {self.equipment}"
@@ -206,20 +208,17 @@ class Sale(models.Model):
     def save(self, *args, **kwargs):
         if not self.invoice_number:
             self.invoice_number = f"INV-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-
-        # Only reduce stock when Sale is first created
         if not self.pk:
             if self.tool.stock > 0:
                 self.tool.stock -= 1
                 if self.tool.stock == 0:
                     self.tool.status = "sold"
                 self.tool.save()
-
         super().save(*args, **kwargs)
 
 
 # ----------------------------
-#  Payments
+#  PAYMENTS
 # ----------------------------
 class Payment(models.Model):
     PAYMENT_METHODS = [
@@ -244,37 +243,3 @@ class Payment(models.Model):
 
     def __str__(self):
         return f"Payment {self.id} - {self.customer.email}"
-
-
-# ----------------------------
-#  Customers
-# ----------------------------
-class Customer(models.Model):
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="customer",
-        null=True,
-        blank=True,
-    )
-    name = models.CharField(max_length=100)
-    phone = models.CharField(max_length=20)
-    email = models.EmailField(blank=True, null=True)
-    state = models.CharField(max_length=100, blank=True, null=True)
-    is_activated = models.BooleanField(default=False)
-
-    def __str__(self):
-        return self.name or "Unnamed Customer"
-
-
-@receiver(post_save, sender=Customer)
-def create_user_for_customer(sender, instance, created, **kwargs):
-    if created and not instance.user:
-        user = User.objects.create_user(
-            email=instance.email or f"{instance.phone}@example.com",
-            password="defaultpass123",
-            role="customer",
-            is_active=False
-        )
-        instance.user = user
-        instance.save()
