@@ -7,8 +7,6 @@ import uuid
 import random
 import string
 from datetime import date
-
-
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 
@@ -100,12 +98,26 @@ class Tool(models.Model):
         ('disabled', 'Disabled'),
         ('sold', 'Sold'),
     )
+
+    CATEGORY_CHOICES = (
+        ('Receiver', 'Receiver'),
+        ('Base', 'Base'),
+        ('Rover', 'Rover'),
+        ('Accessory', 'Accessory'),
+        ('Power Tool', 'Power Tool'),
+        ('Measuring', 'Measuring'),
+        ('Safety Gear', 'Safety Gear'),
+        ('Other', 'Other'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     code = models.CharField(max_length=100, unique=True)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.PositiveIntegerField(default=1)
+    supplier = models.CharField(max_length=100, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     is_enabled = models.BooleanField(default=True)
 
@@ -113,7 +125,6 @@ class Tool(models.Model):
         return self.name
 
     def decrease_stock(self):
-        """Decrease stock when a sale or rental occurs"""
         if self.stock > 0:
             self.stock -= 1
             if self.stock == 0:
@@ -121,13 +132,10 @@ class Tool(models.Model):
             self.save()
 
     def increase_stock(self):
-        """Increase stock when rental is completed"""
         self.stock += 1
         if self.status == "sold":
             self.status = "available"
         self.save()
-
-
 # ----------------------------
 #  Rentals
 # ----------------------------

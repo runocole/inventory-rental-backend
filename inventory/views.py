@@ -125,13 +125,14 @@ class ToolListCreateView(generics.ListCreateAPIView):
             raise permissions.PermissionDenied("Customers cannot add tools.")
         serializer.save()
 
-
 class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Tool.objects.all()
     serializer_class = ToolSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-
+    def patch(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+    
 # ---------------------------------------------------
 # RENTALS
 # ---------------------------------------------------
