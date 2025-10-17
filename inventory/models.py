@@ -178,19 +178,42 @@ class Rental(models.Model):
 
         super().save(*args, **kwargs)
 
+# ----------------------------
+#  SALES (Internal CRM)
+# ----------------------------
+from django.db import models
+from django.utils import timezone
+import random, string
+from datetime import date
+from django.contrib.auth import get_user_model
 
-# ----------------------------
-#  SALES
-# ----------------------------
+User = get_user_model()
+
+
 class Sale(models.Model):
     PAYMENT_STATUS_CHOICES = (
         ("pending", "Pending"),
         ("completed", "Completed"),
+        ("installment", "Installment"),
         ("failed", "Failed"),
     )
 
-    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={"role": "customer"})
+    # 🔹 Who made the sale (staff)
+    staff = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="sales_made",
+        limit_choices_to={"role": "staff"}
+    )
+
+    # 🔹 Which customer the sale is for
+    customer = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="purchases",
+        limit_choices_to={"role": "customer"}
+    )
+
+    # 🔹 Which tool was sold
     tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
+
+    # 🔹 Sale details
     name = models.CharField(max_length=255)
     phone = models.CharField(max_length=20)
     state = models.CharField(max_length=100)
@@ -200,14 +223,19 @@ class Sale(models.Model):
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
-    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending")
+    payment_status = models.CharField(
+        max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending"
+    )
 
     def __str__(self):
         return f"{self.name} - {self.equipment}"
 
     def save(self, *args, **kwargs):
+        # Auto-generate invoice number
         if not self.invoice_number:
             self.invoice_number = f"INV-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+
+        # Deduct stock only on creation
         if not self.pk:
             if self.tool.stock > 0:
                 self.tool.stock -= 1
@@ -215,6 +243,7 @@ class Sale(models.Model):
                     self.tool.status = "sold"
                 self.tool.save()
         super().save(*args, **kwargs)
+
 
 
 # ----------------------------

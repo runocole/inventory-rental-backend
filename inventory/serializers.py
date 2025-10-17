@@ -63,47 +63,42 @@ class RentalSerializer(serializers.ModelSerializer):
         return rental
 
 # ----------------------------
-# SALE SERIALIZER
+# SALE SERIALIZER (Staff-managed)
 # ----------------------------
+from rest_framework import serializers
+from .models import Sale, Tool, User
+from .serializers import ToolSerializer  # adjust if needed
+
+
 class SaleSerializer(serializers.ModelSerializer):
     tool = ToolSerializer(read_only=True)
     tool_id = serializers.PrimaryKeyRelatedField(
         queryset=Tool.objects.all(), source="tool", write_only=True
     )
+    customer_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(role="customer"),
+        source="customer",
+        write_only=True
+    )
 
     class Meta:
         model = Sale
         fields = [
-            "id", "tool", "tool_id",
-            "customer", "name", "phone", "state",
+            "id", "staff", "customer", "customer_id",
+            "tool", "tool_id", "name", "phone", "state",
             "equipment", "cost_sold", "date_sold",
             "invoice_number", "payment_plan",
             "expiry_date", "payment_status"
         ]
-        read_only_fields = ["date_sold", "invoice_number", "payment_status"]
+        read_only_fields = [
+            "staff", "date_sold", "invoice_number", "payment_status"
+        ]
 
     def create(self, validated_data):
         user = self.context["request"].user
-        validated_data["customer"] = user
+        validated_data["staff"] = user  # logged-in staff member
+        return super().create(validated_data)
 
-        try:
-            customer_profile = user.customer
-            validated_data.setdefault("name", customer_profile.name)
-            validated_data.setdefault("phone", customer_profile.phone)
-            validated_data.setdefault("state", customer_profile.state)
-        except Customer.DoesNotExist:
-            pass
-
-        sale = super().create(validated_data)
-
-        tool = sale.tool
-        if tool.stock > 0:
-            tool.stock -= 1
-            if tool.stock == 0:
-                tool.status = "sold"
-            tool.save()
-
-        return sale
 
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
