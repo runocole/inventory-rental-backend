@@ -1,3 +1,4 @@
+from django.db import models
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
 from .models import Tool, Rental, Payment, Sale, Customer
@@ -16,6 +17,8 @@ from django.utils import timezone
 import random, string, secrets
 import uuid 
 from django.conf import settings
+from django.db.models import Sum, Count
+
 
 
 User = get_user_model()
@@ -250,22 +253,22 @@ def confirm_payment(request, pk):
         print("Payment confirmation failed:", e)
         return Response({"detail": str(e)}, status=500)
 
+# ----------------------------
+# DASHBOARD SUMMARY VIEW
+# ----------------------------
 
-# ---------------------------------------------------
-# DASHBOARD SUMMARY
-# ---------------------------------------------------
 class DashboardSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
 
+        # Basic summaries
         if user.role == "customer":
             total_sales = Sale.objects.filter(customer=user).count()
             total_rented = Rental.objects.filter(customer=user, status="active").count()
             total_revenue = (
-                Sale.objects.filter(customer=user).aggregate(total=Sum("cost_sold"))["total"]
-                or 0
+                Sale.objects.filter(customer=user).aggregate(total=Sum("cost_sold"))["total"] or 0
             )
         else:
             total_sales = Sale.objects.count()
@@ -274,10 +277,9 @@ class DashboardSummaryView(APIView):
 
         tools_count = Tool.objects.count()
         staff_count = User.objects.filter(role="staff").count()
-        active_customers = Customer.objects.filter(is_activated=True).count()  # ✅ fixed here
+        active_customers = Customer.objects.filter(is_activated=True).count()
 
-        # Compute month-to-date revenue (for MTD)
-        from django.utils import timezone
+        # Month-to-date revenue
         today = timezone.now()
         month_start = today.replace(day=1)
         mtd_revenue = (
@@ -287,6 +289,7 @@ class DashboardSummaryView(APIView):
             or 0
         )
 
+        # Tool status counts
         tool_status_counts = {
             "available": Tool.objects.filter(status="available").count(),
             "rented": Tool.objects.filter(status="rented").count(),
@@ -295,6 +298,26 @@ class DashboardSummaryView(APIView):
             "sold": Tool.objects.filter(status="sold").count(),
         }
 
+        # Inventory Breakdown (category pie chart)
+        inventory_breakdown = (
+            Tool.objects.values("category")
+            .annotate(count=models.Count("id"))
+            .order_by("category")
+        )
+
+        # ✅ Low Stock Items (table)
+        low_stock_items = list(
+            Tool.objects.filter(stock__lte=5)  # customize threshold here
+            .values("id", "name", "code", "category", "stock", "status")[:5]
+        )
+
+        # ✅ Top Selling Tools
+        top_selling_tools = (
+            Sale.objects.values("tool__name")
+            .annotate(total_sold=models.Count("id"))
+            .order_by("-total_sold")[:5]
+        )
+
         return Response(
             {
                 "totalTools": tools_count,
@@ -302,6 +325,9 @@ class DashboardSummaryView(APIView):
                 "activeCustomers": active_customers,
                 "mtdRevenue": mtd_revenue,
                 "toolStatusCounts": tool_status_counts,
+                "inventoryBreakdown": list(inventory_breakdown),
+                "lowStockItems": low_stock_items,
+                "topSellingTools": list(top_selling_tools),
             }
         )
 
