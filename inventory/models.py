@@ -93,25 +93,31 @@ def create_user_for_customer(sender, instance, created, **kwargs):
 #  TOOLS
 # ----------------------------
 class Tool(models.Model):
-    STATUS_CHOICES = (
-        ("available", "Available"),
-        ("rented", "Rented"),
-        ("maintenance", "Maintenance"),
-        ("disabled", "Disabled"),
-        ("sold", "Sold"),
-    )
 
     CATEGORY_CHOICES = (
         ("Receiver", "Receiver"),
-        ("Base", "Base"),
-        ("Rover", "Rover"),
-        ("Accessory", "Accessory"),
-        ("Power Tool", "Power Tool"),
-        ("Measuring", "Measuring"),
-        ("Safety Gear", "Safety Gear"),
+        ("Acessory", "Acessory"),
+        ("Total Station", "Total Station"),
+        ("Level", "Level"),
+        ("Drones", "Drones"),
+        ("EcoSounder", "EcoSounder"),
+        ("Laser Scanner", "Laser Scanner"),
         ("Other", "Other"),
     )
 
+    SUPPLIER_CHOICES = (
+        ("COMNAV TECHNOLOGY", "COMNAV TECHNOLOGY"),
+        ("GINTEC", "GINTEC"),
+        ("AMAZE MULTILINKS", "AMAZE MULTILINKS"),
+        ("HARRYMORE", "HARRYMORE"),
+        ("LEICA GHANA", "LEICA GHANA"),
+        ("QUEST", "QUEST"),
+        ("ADA SWISS-SURVEY", "ADA SWISS-SURVEY"),
+        ("IVY ZENGYU", "IVY ZENGYU"),
+        ("FOIF", "FOIF"),
+        ("SANGRAO HAODI", "SANGRAO HAODI"),
+        ("OTHER", "OTHER"),
+    )
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
@@ -120,9 +126,10 @@ class Tool(models.Model):
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.PositiveIntegerField(default=1)
     supplier = models.CharField(max_length=100, blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="available")
     is_enabled = models.BooleanField(default=True)
-
+    invoice_number = models.CharField(max_length=50, blank=True, null=True)
+    date_added = models.DateTimeField(auto_now_add=True)
+    
     def __str__(self):
         return self.name
 

@@ -266,64 +266,14 @@ class SaleListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         # Staff → only their own sales
         if user.role == "staff":
-            return Sale.objects.filter(staff=user).order_by("-date_sold")
-        # Admin → all sales
+             return Sale.objects.filter(staff=user).order_by("-date_sold")
+       # Admin → all sales
         elif user.role == "admin":
             return Sale.objects.all().order_by("-date_sold")
         # Customers → no access
         return Sale.objects.none()
 
-    def perform_create(self, serializer):
-        user = self.request.user
-
-        # --- Only staff and admin can create sales ---
-        if user.role not in ["staff", "admin"]:
-            raise PermissionDenied("Only staff or admin can record sales.")
-
-        sale = serializer.save(staff=user)  # assign logged-in staff
-
-        # --- Check tool availability ---
-        tool = sale.tool
-        if tool.stock <= 0:
-            raise PermissionDenied("This tool is out of stock.")
-
-        # --- Auto-deduct stock ---
-        tool.stock -= 1
-        if tool.stock == 0:
-            tool.status = "sold"
-        tool.save()
-
-        # --- Generate Paystack reference ---
-        paystack_ref = generate_paystack_reference()
-
-        # --- Auto-create payment record ---
-        Payment.objects.create(
-            customer=sale.customer,
-            sale=sale,
-            amount=sale.cost_sold,
-            payment_method="paystack",
-            payment_reference=paystack_ref,
-            status="pending",
-        )
-
-        # --- Handle payment plan logic ---
-        if sale.payment_plan and sale.payment_plan.lower() in ["full", "full payment"]:
-            sale.payment_status = "completed"
-            sale.date_sold = timezone.now().date()
-            sale.save()
-
-            payment = Payment.objects.filter(sale=sale).first()
-            if payment:
-                payment.status = "completed"
-                payment.save()
-
-        elif sale.payment_plan and "installment" in sale.payment_plan.lower():
-            sale.expiry_date = timezone.now().date() + timezone.timedelta(days=30)
-            sale.payment_status = "installment"
-            sale.save()
-
-        return sale
-
+    
 
 class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SaleSerializer
@@ -347,37 +297,23 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         return super().perform_update(serializer)
 
-# ----------------------------
-# CONFIRM PAYMENT VIEW (Mock/Test Mode)
-# ----------------------------
-from rest_framework.decorators import api_view, permission_classes
+# in your Django views.py
+from django.core.mail import send_mail
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
 @api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def confirm_payment(request, pk):
-    """
-    Mock Paystack payment confirmation (Internal/Test Mode).
-    Staff or Admin can mark payment as confirmed.
-    """
-    sale = get_object_or_404(Sale, pk=pk)
+def send_sale_email(request):
+    data = request.data
+    send_mail(
+        data.get("subject"),
+        data.get("message"),
+        "runocole@gmail.com",
+        [data.get("to_email")],
+        fail_silently=False,
+    )
+    return Response({"message": "Email sent!"})
 
-    if sale.payment_status == "completed":
-        return Response({"detail": "Payment already confirmed."}, status=400)
-
-    sale.payment_status = "completed"
-    sale.date_sold = timezone.now().date()
-    sale.save()
-
-    # Update related Payment
-    payment = Payment.objects.filter(sale=sale).first()
-    if payment:
-        payment.status = "completed"
-        payment.save()
-
-    return Response({
-        "detail": "Payment confirmed successfully (Test Mode).",
-        "sale_id": sale.id,
-        "status": sale.payment_status
-    }, status=200)
 
 # ----------------------------
 # DASHBOARD SUMMARY VIEW

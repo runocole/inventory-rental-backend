@@ -5,7 +5,7 @@ from .views import (
     RentalListCreateView, RentalDetailView,
     SaleListCreateView, SaleDetailView,
     PaymentListCreateView, PaymentDetailView,
-    confirm_payment, DashboardSummaryView, AddCustomerView, CustomerListView
+    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email,
 )
 
 urlpatterns = [
@@ -17,7 +17,8 @@ urlpatterns = [
     # --- Customers ---
     path("customers/add", AddCustomerView.as_view(), name="add-customer"),
     path("customers/", CustomerListView.as_view(), name="customers"),
-    
+    path("api/send-sale-email/", send_sale_email),
+
     # --- Tools ---
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
@@ -33,10 +34,7 @@ urlpatterns = [
     # Payments
     path('payments/', PaymentListCreateView.as_view(), name='payments'),
     path('payments/<int:pk>/', PaymentDetailView.as_view(), name='payment-detail'),
-
-    # Confirm payment (mock)
-    path('sales/<int:pk>/confirm-payment/', confirm_payment, name='confirm-payment'),
-
+    
     # Dashboard
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
 ]
