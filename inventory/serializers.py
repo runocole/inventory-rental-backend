@@ -61,43 +61,63 @@ class RentalSerializer(serializers.ModelSerializer):
             tool.save()
 
         return rental
-
-# ----------------------------
+ # ----------------------------
 # SALE SERIALIZER (Staff-managed)
 # ----------------------------
-from rest_framework import serializers
-from .models import Sale, Tool, User
-from .serializers import ToolSerializer  # adjust if needed
-
 
 class SaleSerializer(serializers.ModelSerializer):
+    # Nested read-only tool info
     tool = ToolSerializer(read_only=True)
     tool_id = serializers.PrimaryKeyRelatedField(
-        queryset=Tool.objects.all(), source="tool", write_only=True
+        queryset=Tool.objects.all(),
+        source="tool",
+        write_only=True
     )
+
+    # Customer input handled by ID, not full object
     customer_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(role="customer"),
         source="customer",
         write_only=True
     )
 
+    # Expose staff name for admin display
+    sold_by = serializers.CharField(source="staff.email", read_only=True)
+
     class Meta:
         model = Sale
         fields = [
-            "id", "staff", "customer", "customer_id",
-            "tool", "tool_id", "name", "phone", "state",
-            "equipment", "cost_sold", "date_sold",
-            "invoice_number", "payment_plan",
-            "expiry_date", "payment_status"
+            "id",
+            "staff",
+            "sold_by",           
+            "customer",
+            "customer_id",
+            "tool",
+            "tool_id",
+            "name",
+            "phone",
+            "state",
+            "equipment",
+            "cost_sold",
+            "date_sold",
+            "invoice_number",
+            "payment_plan",
+            "expiry_date",
+            "payment_status",
         ]
         read_only_fields = [
-            "staff", "date_sold", "invoice_number", "payment_status"
+            "staff",
+            "sold_by",
+            "date_sold",
+            "invoice_number",
+            "payment_status",
         ]
 
     def create(self, validated_data):
         user = self.context["request"].user
-        validated_data["staff"] = user  # logged-in staff member
+        validated_data["staff"] = user  # logged-in staff auto-assigned
         return super().create(validated_data)
+
 
 
 class CustomerSerializer(serializers.ModelSerializer):

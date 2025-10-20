@@ -5,6 +5,7 @@ from django.dispatch import receiver
 from django.db.models.signals import post_save
 import uuid, random, string
 from datetime import date
+from django.contrib.auth import get_user_model
 
 # ----------------------------
 #  USER
@@ -126,6 +127,7 @@ class Tool(models.Model):
         return self.name
 
     def decrease_stock(self):
+        """Reduce stock by 1 and mark as sold if 0."""
         if self.stock > 0:
             self.stock -= 1
             if self.stock == 0:
@@ -133,11 +135,71 @@ class Tool(models.Model):
             self.save()
 
     def increase_stock(self):
+        """Add stock and mark as available if previously sold."""
         self.stock += 1
         if self.status == "sold":
             self.status = "available"
         self.save()
 
+# ----------------------------
+#  SALES (Staff-managed)
+# ----------------------------
+class Sale(models.Model):
+    PAYMENT_STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("completed", "Completed"),
+        ("installment", "Installment"),
+        ("failed", "Failed"),
+    )
+
+    # 🔹 Who made the sale (staff)
+    staff = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,   # safer than CASCADE to keep sales history
+        related_name="sales_made",
+        limit_choices_to={"role": "staff"},
+        null=True,                   # allow null for existing rows
+        blank=True,                  # allow blank in admin/forms
+    )
+
+    # 🔹 Which customer the sale is for
+    customer = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="purchases",
+        limit_choices_to={"role": "customer"},
+    )
+
+    # 🔹 Which tool was sold
+    tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
+
+    # 🔹 Sale details
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=20)
+    state = models.CharField(max_length=100)
+    equipment = models.CharField(max_length=255)
+    cost_sold = models.DecimalField(max_digits=10, decimal_places=2)
+    date_sold = models.DateField(default=date.today)
+    invoice_number = models.CharField(max_length=100, unique=True, blank=True)
+    payment_plan = models.CharField(max_length=100, blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+    payment_status = models.CharField(
+        max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending"
+    )
+
+    def __str__(self):
+        return f"{self.name} - {self.equipment}"
+
+    def save(self, *args, **kwargs):
+        """Auto-generate invoice and handle stock on creation."""
+        if not self.invoice_number:
+            self.invoice_number = f"INV-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+
+        # Deduct stock on first save only
+        if not self.pk and self.tool.stock > 0:
+            self.tool.decrease_stock()
+
+        super().save(*args, **kwargs)
 
 # ----------------------------
 #  RENTALS
@@ -177,74 +239,6 @@ class Rental(models.Model):
                 self.tool.save()
 
         super().save(*args, **kwargs)
-
-# ----------------------------
-#  SALES (Internal CRM)
-# ----------------------------
-from django.db import models
-from django.utils import timezone
-import random, string
-from datetime import date
-from django.contrib.auth import get_user_model
-
-User = get_user_model()
-
-
-class Sale(models.Model):
-    PAYMENT_STATUS_CHOICES = (
-        ("pending", "Pending"),
-        ("completed", "Completed"),
-        ("installment", "Installment"),
-        ("failed", "Failed"),
-    )
-
-    # 🔹 Who made the sale (staff)
-    staff = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="sales_made",
-        limit_choices_to={"role": "staff"}
-    )
-
-    # 🔹 Which customer the sale is for
-    customer = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="purchases",
-        limit_choices_to={"role": "customer"}
-    )
-
-    # 🔹 Which tool was sold
-    tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
-
-    # 🔹 Sale details
-    name = models.CharField(max_length=255)
-    phone = models.CharField(max_length=20)
-    state = models.CharField(max_length=100)
-    equipment = models.CharField(max_length=255)
-    cost_sold = models.DecimalField(max_digits=10, decimal_places=2)
-    date_sold = models.DateField(default=date.today)
-    invoice_number = models.CharField(max_length=100, unique=True, blank=True)
-    payment_plan = models.CharField(max_length=100, blank=True, null=True)
-    expiry_date = models.DateField(blank=True, null=True)
-    payment_status = models.CharField(
-        max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending"
-    )
-
-    def __str__(self):
-        return f"{self.name} - {self.equipment}"
-
-    def save(self, *args, **kwargs):
-        # Auto-generate invoice number
-        if not self.invoice_number:
-            self.invoice_number = f"INV-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-
-        # Deduct stock only on creation
-        if not self.pk:
-            if self.tool.stock > 0:
-                self.tool.stock -= 1
-                if self.tool.stock == 0:
-                    self.tool.status = "sold"
-                self.tool.save()
-        super().save(*args, **kwargs)
-
-
 
 # ----------------------------
 #  PAYMENTS

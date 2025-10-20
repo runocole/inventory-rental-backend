@@ -16,9 +16,11 @@ from django.core.mail import send_mail
 from django.utils import timezone
 import random, string, secrets
 import uuid 
+from django.core.mail import BadHeaderError
+import traceback
 from django.conf import settings
 from django.db.models import Sum, Count
-
+from rest_framework.exceptions import PermissionDenied
 
 
 User = get_user_model()
@@ -49,17 +51,24 @@ class AddStaffView(generics.CreateAPIView):
             role="staff",
             is_active=True,
         )
-
         try:
-            send_mail(
-                subject="Your staff account credentials",
-                message=f"Hello {name or 'Staff'},\n\nYour staff account has been created.\n\nEmail: {email}\nPassword: {password}\n\nPlease log in and change your password.",
+            sent = send_mail(
+                subject="Your Customer Account Details",
+                message=f"Hello {name or 'Customer'},\n\nAn account has been created for you.\n\nEmail: {email}\nPassword: {password}\n\nPlease log in and change your password.",
                 from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "runocole@gmail.com"),
                 recipient_list=[email],
-                fail_silently=True,
+                fail_silently=False,  # 🚨 don't hide issues anymore
             )
+            if sent:
+                print(f"✅ Email successfully sent to {email}")
+            else:
+                print(f"⚠️ send_mail returned False for {email}")
+        except BadHeaderError:
+            print("❌ Invalid header detected when sending email.")
         except Exception as e:
-            print("Failed to send staff creation email:", e)
+            print("❌ Failed to send customer creation email:")
+            traceback.print_exc()
+
         return Response(
     {
         "id": user.id,
@@ -96,17 +105,100 @@ class EmailLoginView(APIView):
         if not user.is_active:
             return Response({"detail": "User account is disabled."}, status=status.HTTP_403_FORBIDDEN)
 
+        # ✅ Activate customer automatically on first login
+        if user.role == "customer":
+            try:
+                customer = Customer.objects.get(user=user)
+                if not customer.is_activated:
+                    customer.is_activated = True
+                    customer.save()
+            except Customer.DoesNotExist:
+                # in case there's no linked Customer record, skip silently
+                pass
+
+        # Generate tokens
         refresh = RefreshToken.for_user(user)
         user_data = UserSerializer(user).data
-
-        if user_data.get("role") == "customer":
-            user_data["role"] = "staff"
 
         return Response({
             "access": str(refresh.access_token),
             "refresh": str(refresh),
             "user": user_data
         }, status=status.HTTP_200_OK)
+# ----------------------------
+# AddCustomerView
+# ----------------------------
+class AddCustomerView(generics.CreateAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]  
+
+    def post(self, request, *args, **kwargs):
+        email = request.data.get("email")
+        name = request.data.get("name")
+        phone = request.data.get("phone")
+        state = request.data.get("state")
+
+        if not email:
+            return Response({"detail": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(email=email).exists():
+            return Response({"detail": "User with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        password = secrets.token_urlsafe(10)
+        user = User.objects.create_user(
+            email=email,
+            password=password,
+            name=name or "",
+            phone=phone or "",
+            role="customer",
+            is_active=True,
+        )
+
+        # Optional: Create a linked CustomerProfile if your model has it
+        try:
+            Customer.objects.create(user=user, name=name, phone=phone, state=state)
+        except Exception as e:
+            print("Failed to create customer profile:", e)
+
+        # Send login email
+        try:
+            send_mail(
+                subject="Your Customer Account Details",
+                message=f"Hello {name or 'Customer'},\n\nAn account has been created for you.\n\nEmail: {email}\nPassword: {password}\n\nPlease log in and change your password.",
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "runocole@gmail.com"),
+                recipient_list=[email],
+                fail_silently=True,
+            )
+        except Exception as e:
+            print("Failed to send customer creation email:", e)
+
+        return Response(
+            {
+                "id": user.id,
+                "email": email,
+                "name": user.name,
+                "phone": user.phone,
+                "state": state,
+                "detail": "Customer created successfully and login email sent."
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+# ----------------------------
+# Customer List View
+# ----------------------------
+class CustomerListView(generics.ListAPIView):
+    serializer_class = CustomerSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Admin sees all; staff sees customers they created (optional)
+        user = self.request.user
+        if user.role == "admin":
+            return Customer.objects.all().order_by("-id")
+        else:
+            return Customer.objects.all().order_by("-id")
+
 
 # ---------------------------------------------------
 # TOOLS
@@ -165,14 +257,6 @@ class RentalDetailView(generics.RetrieveUpdateDestroyAPIView):
 # SALES (Internal - Staff Managed)
 # ---------------------------------------------------
 
-from rest_framework import generics, permissions
-from django.utils import timezone
-from django.shortcuts import get_object_or_404
-from rest_framework.response import Response
-from .models import Sale, Payment, Tool
-from .serializers import SaleSerializer
-from .utils import generate_paystack_reference  # assuming this exists
-
 
 class SaleListCreateView(generics.ListCreateAPIView):
     serializer_class = SaleSerializer
@@ -182,25 +266,26 @@ class SaleListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         # Staff → only their own sales
         if user.role == "staff":
-            return Sale.objects.filter(staff=user)
+            return Sale.objects.filter(staff=user).order_by("-date_sold")
         # Admin → all sales
         elif user.role == "admin":
-            return Sale.objects.all()
-        # Customers have no access to /sales/ endpoint
+            return Sale.objects.all().order_by("-date_sold")
+        # Customers → no access
         return Sale.objects.none()
 
     def perform_create(self, serializer):
         user = self.request.user
 
-        # --- Staff can only create sales ---
+        # --- Only staff and admin can create sales ---
         if user.role not in ["staff", "admin"]:
-            raise permissions.PermissionDenied("Only staff or admin can record sales.")
+            raise PermissionDenied("Only staff or admin can record sales.")
 
         sale = serializer.save(staff=user)  # assign logged-in staff
 
+        # --- Check tool availability ---
         tool = sale.tool
         if tool.stock <= 0:
-            raise permissions.PermissionDenied("This tool is out of stock.")
+            raise PermissionDenied("This tool is out of stock.")
 
         # --- Auto-deduct stock ---
         tool.stock -= 1
@@ -211,17 +296,17 @@ class SaleListCreateView(generics.ListCreateAPIView):
         # --- Generate Paystack reference ---
         paystack_ref = generate_paystack_reference()
 
-        # --- Auto-create a Payment record linked to this sale ---
+        # --- Auto-create payment record ---
         Payment.objects.create(
             customer=sale.customer,
             sale=sale,
             amount=sale.cost_sold,
             payment_method="paystack",
             payment_reference=paystack_ref,
-            status="pending"
+            status="pending",
         )
 
-        # If it's full payment, mark sale + payment as completed
+        # --- Handle payment plan logic ---
         if sale.payment_plan and sale.payment_plan.lower() in ["full", "full payment"]:
             sale.payment_status = "completed"
             sale.date_sold = timezone.now().date()
@@ -232,7 +317,6 @@ class SaleListCreateView(generics.ListCreateAPIView):
                 payment.status = "completed"
                 payment.save()
 
-        # If it's installment, calculate expiry_date (e.g. +30 days)
         elif sale.payment_plan and "installment" in sale.payment_plan.lower():
             sale.expiry_date = timezone.now().date() + timezone.timedelta(days=30)
             sale.payment_status = "installment"
@@ -242,7 +326,6 @@ class SaleListCreateView(generics.ListCreateAPIView):
 
 
 class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Sale.objects.all()
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -254,6 +337,15 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
             return Sale.objects.all()
         return Sale.objects.none()
 
+    def perform_update(self, serializer):
+        user = self.request.user
+        instance = self.get_object()
+
+        # Staff can only update their own sales
+        if user.role == "staff" and instance.staff != user:
+            raise PermissionDenied("You can only edit your own sales.")
+
+        return super().perform_update(serializer)
 
 # ----------------------------
 # CONFIRM PAYMENT VIEW (Mock/Test Mode)
@@ -332,20 +424,20 @@ class DashboardSummaryView(APIView):
             "sold": Tool.objects.filter(status="sold").count(),
         }
 
-        # Inventory Breakdown (category pie chart)
+        # Inventory Breakdown 
         inventory_breakdown = (
             Tool.objects.values("category")
             .annotate(count=models.Count("id"))
             .order_by("category")
         )
 
-        # ✅ Low Stock Items (table)
+        # Low Stock Items 
         low_stock_items = list(
             Tool.objects.filter(stock__lte=5)  # customize threshold here
             .values("id", "name", "code", "category", "stock", "status")[:5]
         )
 
-        # ✅ Top Selling Tools
+        # Top Selling Tools
         top_selling_tools = (
             Sale.objects.values("tool__name")
             .annotate(total_sold=models.Count("id"))
@@ -371,32 +463,6 @@ class DashboardSummaryView(APIView):
 def generate_paystack_reference():
     """Generate unique Paystack-like reference for test mode"""
     return f"TEST_REF_{uuid.uuid4().hex[:10].upper()}"
-
-
-# -------------------------------
-# Customer list/create
-# -------------------------------
-class CustomerListCreateView(generics.ListCreateAPIView):
-    """
-    NOTE: Permission changed to IsAuthenticated so your frontend can POST /api/customers/
-    If you want to restrict creation to only staff/admin later, switch to IsAdminOrStaff.
-    """
-    queryset = Customer.objects.all()
-    serializer_class = CustomerSerializer
-    permission_classes = [permissions.IsAuthenticated]   # <-- allow authenticated users to list/create
-
-    def get_queryset(self):
-        # Admin/Staff see all customers; customers should not have this view in UI
-        user = self.request.user
-        if hasattr(user, "role") and user.role in ["admin", "staff"]:
-            return Customer.objects.all()
-        # For safety: if a customer somehow hits this endpoint, return only their record (if linked)
-        return Customer.objects.filter(user=user)
-
-    def perform_create(self, serializer):
-        # create Customer record using data from frontend
-        # if you want to auto-create linked User, that's handled by the post_save signal in models.py
-        serializer.save()
 
 
 class PaymentListCreateView(generics.ListCreateAPIView):
