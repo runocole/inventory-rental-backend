@@ -351,14 +351,7 @@ class DashboardSummaryView(APIView):
             or 0
         )
 
-        # Tool status counts
-        tool_status_counts = {
-            "available": Tool.objects.filter(status="available").count(),
-            "rented": Tool.objects.filter(status="rented").count(),
-            "maintenance": Tool.objects.filter(status="maintenance").count(),
-            "disabled": Tool.objects.filter(status="disabled").count(),
-            "sold": Tool.objects.filter(status="sold").count(),
-        }
+        
 
         # Inventory Breakdown 
         inventory_breakdown = (
@@ -370,7 +363,7 @@ class DashboardSummaryView(APIView):
         # Low Stock Items 
         low_stock_items = list(
             Tool.objects.filter(stock__lte=5)  # customize threshold here
-            .values("id", "name", "code", "category", "stock", "status")[:5]
+            .values("id", "name", "code", "category", "stock")[:5]
         )
 
         # Top Selling Tools
@@ -386,7 +379,6 @@ class DashboardSummaryView(APIView):
                 "totalStaff": staff_count,
                 "activeCustomers": active_customers,
                 "mtdRevenue": mtd_revenue,
-                "toolStatusCounts": tool_status_counts,
                 "inventoryBreakdown": list(inventory_breakdown),
                 "lowStockItems": low_stock_items,
                 "topSellingTools": list(top_selling_tools),
