@@ -119,11 +119,14 @@ class SaleSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-
 class CustomerSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source="user.email", read_only=True)
+    name = serializers.CharField(source="user.name", read_only=True)
+    phone = serializers.CharField(source="user.phone", read_only=True)
+
     class Meta:
         model = Customer
-        fields = ["id", "name", "phone", "email", "state", "is_activated"]
+        fields = ["id", "email", "name", "phone", "state", "is_activated"]
 
 # ----------------------------
 # PAYMENT SERIALIZER
