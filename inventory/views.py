@@ -1,9 +1,9 @@
 from django.db import models
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
-from .models import Tool, Rental, Payment, Sale, Customer
+from .models import Tool, Payment, Sale, Customer, ReceiverType
 from .serializers import (
-    UserSerializer, ToolSerializer, RentalSerializer,
+    UserSerializer, ToolSerializer, ReceiverTypeSerializer,
     PaymentSerializer, SaleSerializer, CustomerSerializer
 )
 from .permissions import IsAdminOrStaff, IsOwnerOrAdmin
@@ -130,7 +130,7 @@ class EmailLoginView(APIView):
 # ----------------------------
 class AddCustomerView(generics.CreateAPIView):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]  
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         email = request.data.get("email")
@@ -154,11 +154,13 @@ class AddCustomerView(generics.CreateAPIView):
             is_active=True,
         )
 
-        # Optional: Create a linked CustomerProfile if your model has it
-        try:
-            Customer.objects.create(user=user, name=name, phone=phone, state=state)
-        except Exception as e:
-            print("Failed to create customer profile:", e)
+        Customer.objects.create(
+            user=user,
+            name=name,
+            phone=phone,
+            state=state,
+            email=email
+        )
 
         # Send login email
         try:
@@ -200,25 +202,27 @@ class CustomerListView(generics.ListAPIView):
             return Customer.objects.all().order_by("-id")
 
 
-# ---------------------------------------------------
-# TOOLS
-# ---------------------------------------------------
-
+# ----------------------------
+#  TOOLS
+# ----------------------------
 class ToolListCreateView(generics.ListCreateAPIView):
-    queryset = Tool.objects.all()
+    queryset = Tool.objects.all().order_by("-date_added")
     serializer_class = ToolSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
+        # Customers only see available stock
         if hasattr(user, "role") and user.role == "customer":
-            return Tool.objects.filter(stock__gt=0)
+            return Tool.objects.filter(stock__gt=0, is_enabled=True)
         return Tool.objects.all()
 
     def perform_create(self, serializer):
-        if hasattr(self.request.user, "role") and self.request.user.role == "customer":
+        user = self.request.user
+        if hasattr(user, "role") and user.role == "customer":
             raise permissions.PermissionDenied("Customers cannot add tools.")
         serializer.save()
+
 
 class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Tool.objects.all()
@@ -226,32 +230,17 @@ class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, *args, **kwargs):
+        """Allow partial updates (PATCH)."""
         return self.partial_update(request, *args, **kwargs)
-    
+
 # ---------------------------------------------------
-# RENTALS
+# RECEIVER TYPE
 # ---------------------------------------------------
 
-class RentalListCreateView(generics.ListCreateAPIView):
-    serializer_class = RentalSerializer
+class ReceiverTypeListView(generics.ListAPIView):
+    queryset = ReceiverType.objects.all().order_by("name")
+    serializer_class = ReceiverTypeSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-        if user.role == "customer":
-            return Rental.objects.filter(customer=user)
-        return Rental.objects.all()
-
-    def perform_create(self, serializer):
-        # Auto-link customer to logged-in user
-        serializer.save(customer=self.request.user)
-
-
-class RentalDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Rental.objects.all()
-    serializer_class = RentalSerializer
-    permission_classes = [IsOwnerOrAdmin]
-
 
 # ---------------------------------------------------
 # SALES (Internal - Staff Managed)
@@ -328,13 +317,11 @@ class DashboardSummaryView(APIView):
         # Basic summaries
         if user.role == "customer":
             total_sales = Sale.objects.filter(customer=user).count()
-            total_rented = Rental.objects.filter(customer=user, status="active").count()
             total_revenue = (
                 Sale.objects.filter(customer=user).aggregate(total=Sum("cost_sold"))["total"] or 0
             )
         else:
             total_sales = Sale.objects.count()
-            total_rented = Rental.objects.filter(status="active").count()
             total_revenue = Sale.objects.aggregate(total=Sum("cost_sold"))["total"] or 0
 
         tools_count = Tool.objects.count()

@@ -1,8 +1,7 @@
 from django.urls import path
 from .views import (
     EmailLoginView,  AddStaffView, StaffListView,
-    ToolListCreateView, ToolDetailView,
-    RentalListCreateView, RentalDetailView,
+    ToolListCreateView, ToolDetailView, ReceiverTypeListView,
     SaleListCreateView, SaleDetailView,
     PaymentListCreateView, PaymentDetailView,
     DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email,
@@ -22,15 +21,14 @@ urlpatterns = [
     # --- Tools ---
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
+    
+    # -- Receiver Type ---
+    path("receiver-types/", ReceiverTypeListView.as_view(), name="receiver-types"),
 
     # --- Sales ---
     path("sales/", SaleListCreateView.as_view(), name="sales"),
     path("sales/<int:pk>/", SaleDetailView.as_view(), name="sale-detail"),
-
-    # Rentals
-    path('rentals/', RentalListCreateView.as_view(), name='rentals'),
-    path('rentals/<int:pk>/', RentalDetailView.as_view(), name='rental-detail'),
-
+     
     # Payments
     path('payments/', PaymentListCreateView.as_view(), name='payments'),
     path('payments/<int:pk>/', PaymentDetailView.as_view(), name='payment-detail'),

@@ -90,13 +90,12 @@ def create_user_for_customer(sender, instance, created, **kwargs):
 
 
 # ----------------------------
-#  TOOLS
+#  TOOLS MODEL
 # ----------------------------
 class Tool(models.Model):
-
     CATEGORY_CHOICES = (
         ("Receiver", "Receiver"),
-        ("Acessory", "Acessory"),
+        ("Accessory", "Accessory"),
         ("Total Station", "Total Station"),
         ("Level", "Level"),
         ("Drones", "Drones"),
@@ -118,18 +117,22 @@ class Tool(models.Model):
         ("SANGRAO HAODI", "SANGRAO HAODI"),
         ("OTHER", "OTHER"),
     )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
-    description = models.TextField(blank=True)
     code = models.CharField(max_length=100, unique=True)
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
+    description = models.TextField(blank=True)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.PositiveIntegerField(default=1)
-    supplier = models.CharField(max_length=100, blank=True)
+    supplier = models.CharField(max_length=100, choices=SUPPLIER_CHOICES, blank=True)
     is_enabled = models.BooleanField(default=True)
     invoice_number = models.CharField(max_length=50, blank=True, null=True)
     date_added = models.DateTimeField(auto_now_add=True)
-    
+
+    # Optional: to store multiple serials if needed
+    serials = models.JSONField(default=list, blank=True)
+
     def __str__(self):
         return self.name
 
@@ -137,16 +140,13 @@ class Tool(models.Model):
         """Reduce stock by 1 and mark as sold if 0."""
         if self.stock > 0:
             self.stock -= 1
-            if self.stock == 0:
-                self.status = "sold"
-            self.save()
+            self.save(update_fields=["stock"])
 
     def increase_stock(self):
-        """Add stock and mark as available if previously sold."""
+        """Add stock and update availability."""
         self.stock += 1
-        if self.status == "sold":
-            self.status = "available"
-        self.save()
+        self.save(update_fields=["stock"])
+
 
 # ----------------------------
 #  SALES (Staff-managed)
@@ -208,44 +208,16 @@ class Sale(models.Model):
 
         super().save(*args, **kwargs)
 
-# ----------------------------
-#  RENTALS
-# ----------------------------
-class Rental(models.Model):
-    STATUS_CHOICES = (
-        ("active", "Active"),
-        ("completed", "Completed"),
-        ("overdue", "Overdue"),
-    )
 
-    tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
-    customer = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={"role": "customer"})
-    start_date = models.DateField()
-    end_date = models.DateField()
-    amount_due = models.DecimalField(max_digits=10, decimal_places=2)
-    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
-    settled = models.BooleanField(default=False)
+# ---------------------
+#     RECEIVER TYPES
+#----------------------
+class ReceiverType(models.Model):
+    name = models.CharField(max_length=100, unique=True)
 
     def __str__(self):
-        return f"{self.tool.name} rented by {self.customer.email}"
+        return self.name
 
-    def save(self, *args, **kwargs):
-        if not self.pk:
-            if self.tool.stock > 0:
-                self.tool.stock -= 1
-                if self.tool.stock == 0:
-                    self.tool.status = "rented"
-                self.tool.save()
-        else:
-            old = Rental.objects.get(pk=self.pk)
-            if old.status != self.status and self.status == "completed":
-                self.tool.stock += 1
-                if self.tool.status == "rented":
-                    self.tool.status = "available"
-                self.tool.save()
-
-        super().save(*args, **kwargs)
 
 # ----------------------------
 #  PAYMENTS
@@ -264,7 +236,6 @@ class Payment(models.Model):
 
     customer = models.ForeignKey(User, on_delete=models.CASCADE)
     sale = models.ForeignKey(Sale, on_delete=models.SET_NULL, null=True, blank=True)
-    rental = models.ForeignKey(Rental, on_delete=models.SET_NULL, null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHODS, default="paystack")
     payment_reference = models.CharField(max_length=100, blank=True, null=True)

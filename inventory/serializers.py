@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Tool, Rental, Payment, Sale, Customer
+from .models import Tool, ReceiverType, Payment, Sale, Customer
 from django.core.mail import send_mail
 from django.utils.crypto import get_random_string
 
@@ -23,44 +23,32 @@ class UserSerializer(serializers.ModelSerializer):
             user.set_unusable_password()
         user.save()
         return user
+
 # ----------------------------
-# TOOL SERIALIZER
+#  TOOL SERIALIZER
 # ----------------------------
 class ToolSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tool
         fields = "__all__"
 
-# ----------------------------
-# RENTAL SERIALIZER
-# ----------------------------
-class RentalSerializer(serializers.ModelSerializer):
-    tool = ToolSerializer(read_only=True)
-    tool_id = serializers.PrimaryKeyRelatedField(queryset=Tool.objects.all(), source="tool", write_only=True)
-    customer_name = serializers.CharField(source="customer.email", read_only=True)
+    def validate_serials(self, value):
+        """Ensure serials is a list of strings."""
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Serials must be a list.")
+        if not all(isinstance(s, str) for s in value):
+            raise serializers.ValidationError("Each serial must be a string.")
+        return value
 
+
+# ----------------------------
+# RECEIVER TYPE
+# ----------------------------
+class ReceiverTypeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Rental
-        fields = [
-            "id",
-            "tool", "tool_id",
-            "customer", "customer_name",
-            "start_date", "end_date",
-            "amount_due", "amount_paid",
-            "status", "settled"
-        ]
-        read_only_fields = ["customer", "status", "settled"]
+        model = ReceiverType
+        fields = "__all__"
 
-    def create(self, validated_data):
-        validated_data["customer"] = self.context["request"].user
-        rental = super().create(validated_data)
-
-        tool = rental.tool
-        if tool.stock > 0:
-            tool.stock -= 1
-            tool.save()
-
-        return rental
  # ----------------------------
 # SALE SERIALIZER (Staff-managed)
 # ----------------------------
@@ -132,17 +120,12 @@ class PaymentSerializer(serializers.ModelSerializer):
     sale = serializers.PrimaryKeyRelatedField(
         queryset=Sale.objects.all(), required=False, allow_null=True
     )
-    rental = serializers.PrimaryKeyRelatedField(
-        queryset=Rental.objects.all(), required=False, allow_null=True
-    )
-
     class Meta:
         model = Payment
         fields = [
             "id",
             "customer",
             "sale",
-            "rental",
             "amount",
             "payment_method",
             "payment_reference",
