@@ -163,3 +163,12 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'runocole@gmail.com'
 EMAIL_HOST_PASSWORD = 'yocg yqgi mrna nnrx'
 DEFAULT_FROM_EMAIL = 'runocole@gmail.com'
+
+from django.db.backends.signals import connection_created
+from django.dispatch import receiver
+
+@receiver(connection_created)
+def disable_foreign_keys(sender, connection, **kwargs):
+    if connection.vendor == 'sqlite':
+        cursor = connection.cursor()
+        cursor.execute('PRAGMA foreign_keys = OFF;')

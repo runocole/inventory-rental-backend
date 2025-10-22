@@ -4,7 +4,7 @@ from .views import (
     ToolListCreateView, ToolDetailView, ReceiverTypeListView,
     SaleListCreateView, SaleDetailView,
     PaymentListCreateView, PaymentDetailView,
-    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email,
+    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, SupplierListView, SupplierDetailView, ReceiverTypeDetailView, ReceiverTypeListView,
 )
 
 urlpatterns = [
@@ -22,16 +22,22 @@ urlpatterns = [
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
     
-    # -- Receiver Type ---
-    path("receiver-types/", ReceiverTypeListView.as_view(), name="receiver-types"),
+    # Receiver Type
+    path("receiver-types/", ReceiverTypeListView.as_view(), name="receiver-type-list"),
+    path("receiver-types/<int:pk>/", ReceiverTypeDetailView.as_view(), name="receiver-type-detail"),
+
 
     # --- Sales ---
     path("sales/", SaleListCreateView.as_view(), name="sales"),
     path("sales/<int:pk>/", SaleDetailView.as_view(), name="sale-detail"),
-     
+
     # Payments
     path('payments/', PaymentListCreateView.as_view(), name='payments'),
     path('payments/<int:pk>/', PaymentDetailView.as_view(), name='payment-detail'),
+    #Suppliers
+
+    path('suppliers/', SupplierListView.as_view(), name='suppliers'),
+    path('suppliers/<uuid:pk>/', SupplierDetailView.as_view(), name='supplier-detail'),
     # Dashboard
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
-]
+]   

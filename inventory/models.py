@@ -88,10 +88,13 @@ def create_user_for_customer(sender, instance, created, **kwargs):
         instance.user = user
         instance.save()
 
-
 # ----------------------------
 #  TOOLS MODEL
 # ----------------------------
+import uuid
+from django.db import models
+
+
 class Tool(models.Model):
     CATEGORY_CHOICES = (
         ("Receiver", "Receiver"),
@@ -104,20 +107,6 @@ class Tool(models.Model):
         ("Other", "Other"),
     )
 
-    SUPPLIER_CHOICES = (
-        ("COMNAV TECHNOLOGY", "COMNAV TECHNOLOGY"),
-        ("GINTEC", "GINTEC"),
-        ("AMAZE MULTILINKS", "AMAZE MULTILINKS"),
-        ("HARRYMORE", "HARRYMORE"),
-        ("LEICA GHANA", "LEICA GHANA"),
-        ("QUEST", "QUEST"),
-        ("ADA SWISS-SURVEY", "ADA SWISS-SURVEY"),
-        ("IVY ZENGYU", "IVY ZENGYU"),
-        ("FOIF", "FOIF"),
-        ("SANGRAO HAODI", "SANGRAO HAODI"),
-        ("OTHER", "OTHER"),
-    )
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=100, unique=True)
@@ -125,7 +114,16 @@ class Tool(models.Model):
     description = models.TextField(blank=True)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.PositiveIntegerField(default=1)
-    supplier = models.CharField(max_length=100, choices=SUPPLIER_CHOICES, blank=True)
+
+    # 🔹 Dynamic ForeignKey to Supplier (instead of hardcoded choices)
+    supplier = models.ForeignKey(
+        "Supplier",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tools",
+    )
+
     is_enabled = models.BooleanField(default=True)
     invoice_number = models.CharField(max_length=50, blank=True, null=True)
     date_added = models.DateTimeField(auto_now_add=True)
@@ -134,18 +132,51 @@ class Tool(models.Model):
     serials = models.JSONField(default=list, blank=True)
 
     def __str__(self):
-        return self.name
+        return f"{self.name} ({self.code})"
 
+    # --- Utility Methods ---
     def decrease_stock(self):
-        """Reduce stock by 1 and mark as sold if 0."""
+        """Reduce stock by 1 and save."""
         if self.stock > 0:
             self.stock -= 1
             self.save(update_fields=["stock"])
 
     def increase_stock(self):
-        """Add stock and update availability."""
+        """Increase stock by 1 and save."""
         self.stock += 1
         self.save(update_fields=["stock"])
+
+# ----------------------------
+#  RECEIVER TYPES
+# ----------------------------        
+
+class ReceiverType(models.Model):
+    name = models.CharField(max_length=100)
+    default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
+#----------------------------
+# SUPPLIERS 
+#----------------------------
+
+class Supplier(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    email = models.EmailField(blank=True, null=True)
+    phone = models.CharField(max_length=50, blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
 
 
 # ----------------------------
@@ -207,17 +238,6 @@ class Sale(models.Model):
             self.tool.decrease_stock()
 
         super().save(*args, **kwargs)
-
-
-# ---------------------
-#     RECEIVER TYPES
-#----------------------
-class ReceiverType(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-
-    def __str__(self):
-        return self.name
-
 
 # ----------------------------
 #  PAYMENTS
