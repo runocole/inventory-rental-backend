@@ -1,6 +1,7 @@
+# serializers.py
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Tool, ReceiverType, Payment, Sale, Customer, Supplier 
+from .models import Tool, ReceiverType, Payment, Sale, Customer, Supplier
 
 User = get_user_model()
 
@@ -25,9 +26,25 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class ToolSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
+
     class Meta:
         model = Tool
-        fields = "__all__"
+        fields = [
+            "id",
+            "name",
+            "code",
+            "category",
+            "description",
+            "cost",
+            "stock",
+            "supplier",
+            "supplier_name",
+            "is_enabled",
+            "invoice_number",
+            "date_added",
+            "serials",
+        ]
 
     def validate_serials(self, value):
         if not isinstance(value, list):
@@ -42,10 +59,12 @@ class ReceiverTypeSerializer(serializers.ModelSerializer):
         model = ReceiverType
         fields = ["id", "name", "default_cost", "description", "created_at"]
 
+
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
         fields = "__all__"
+
 
 class SaleSerializer(serializers.ModelSerializer):
     tool = ToolSerializer(read_only=True)

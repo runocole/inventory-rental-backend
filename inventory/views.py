@@ -190,21 +190,24 @@ class CustomerListView(generics.ListAPIView):
 # TOOLS
 # ----------------------------
 class ToolListCreateView(generics.ListCreateAPIView):
-    queryset = Tool.objects.all().order_by("-date_added")
     serializer_class = ToolSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
+        queryset = Tool.objects.select_related("supplier").order_by("-date_added")
+
         if getattr(user, "role", None) == "customer":
-            return Tool.objects.filter(stock__gt=0, is_enabled=True)
-        return Tool.objects.all()
+            queryset = queryset.filter(stock__gt=0, is_enabled=True)
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user
         if getattr(user, "role", None) == "customer":
             raise permissions.PermissionDenied("Customers cannot add tools.")
         serializer.save()
+
 
 
 class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
