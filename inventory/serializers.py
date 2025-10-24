@@ -55,7 +55,7 @@ class ToolSerializer(serializers.ModelSerializer):
 
 class EquipmentTypeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = EquipmentType  # Change from ReceiverType to EquipmentType
+        model = EquipmentType  
         fields = ["id", "name", "default_cost", "category", "description", "created_at"]
 
 
