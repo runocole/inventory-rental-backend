@@ -145,20 +145,103 @@ class Tool(models.Model):
         """Increase stock by 1 and save."""
         self.stock += 1
         self.save(update_fields=["stock"])
-
 # ----------------------------
-#  RECEIVER TYPES
-# ----------------------------        
+#  TOOLS MODEL
+# ----------------------------
+class Tool(models.Model):
+    CATEGORY_CHOICES = (
+        ("Receiver", "Receiver"),
+        ("Accessory", "Accessory"),
+        ("Total Station", "Total Station"),
+        ("Level", "Level"),
+        ("Drones", "Drones"),
+        ("EcoSounder", "EcoSounder"),
+        ("Laser Scanner", "Laser Scanner"),
+        ("Other", "Other"),
+    )
 
-class ReceiverType(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100)
+    code = models.CharField(max_length=100, unique=True)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
+    description = models.TextField(blank=True)
+    cost = models.DecimalField(max_digits=10, decimal_places=2)
+    stock = models.PositiveIntegerField(default=1)
+
+    # 🔹 Dynamic ForeignKey to Supplier (instead of hardcoded choices)
+    supplier = models.ForeignKey(
+        "Supplier",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tools",
+    )
+
+    # 🔹 UPDATED: Change from ReceiverType to EquipmentType
+    equipment_type = models.ForeignKey(
+        "EquipmentType",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tools",
+        verbose_name="Equipment Type"
+    )
+
+    is_enabled = models.BooleanField(default=True)
+    invoice_number = models.CharField(max_length=50, blank=True, null=True)
+    date_added = models.DateTimeField(auto_now_add=True)
+
+    # Optional: to store multiple serials if needed
+    serials = models.JSONField(default=list, blank=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+    # --- Utility Methods ---
+    def decrease_stock(self):
+        """Reduce stock by 1 and save."""
+        if self.stock > 0:
+            self.stock -= 1
+            self.save(update_fields=["stock"])
+
+    def increase_stock(self):
+        """Increase stock by 1 and save."""
+        self.stock += 1
+        self.save(update_fields=["stock"])
+
+    @property
+    def display_equipment_type(self):
+        """Display equipment type if available"""
+        if self.equipment_type:
+            return self.equipment_type.name
+        return "N/A"
+# ----------------------------
+#  EQUIPMENT TYPES
+# ----------------------------        
+class EquipmentType(models.Model):  
+    CATEGORY_CHOICES = [
+        ("Receiver", "Receiver"),
+        ("Accessory", "Accessory"), 
+        ("Total Station", "Total Station"),
+        ("Level", "Level"),
+        ("Drones", "Drones"),
+        ("EcoSounder", "EcoSounder"),
+        ("Laser Scanner", "Laser Scanner"),
+        ("Other", "Other"),
+    ]
+    
     name = models.CharField(max_length=100)
     default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="Receiver")
     description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.name
+        return f"{self.category} - {self.name}"
+
+# Update the model name in your admin if needed
+    
 #----------------------------
 # SUPPLIERS 
 #----------------------------

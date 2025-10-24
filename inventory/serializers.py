@@ -1,7 +1,7 @@
 # serializers.py
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Tool, ReceiverType, Payment, Sale, Customer, Supplier
+from .models import Tool, EquipmentType, Payment, Sale, Customer, Supplier
 
 User = get_user_model()
 
@@ -53,11 +53,10 @@ class ToolSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Each serial must be a string.")
         return value
 
-
-class ReceiverTypeSerializer(serializers.ModelSerializer):
+class EquipmentTypeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ReceiverType
-        fields = ["id", "name", "default_cost", "description", "created_at"]
+        model = EquipmentType  # Change from ReceiverType to EquipmentType
+        fields = ["id", "name", "default_cost", "category", "description", "created_at"]
 
 
 class SupplierSerializer(serializers.ModelSerializer):

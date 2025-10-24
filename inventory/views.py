@@ -1,9 +1,9 @@
 from django.db import models
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
-from .models import Tool, Payment, Sale, Customer, ReceiverType, Supplier
+from .models import Tool, Payment, Sale, Customer, EquipmentType, Supplier
 from .serializers import (
-    UserSerializer, ToolSerializer, ReceiverTypeSerializer,
+    UserSerializer, ToolSerializer, EquipmentTypeSerializer,
     PaymentSerializer, SaleSerializer, CustomerSerializer, SupplierSerializer
 )
 from .permissions import IsAdminOrStaff, IsOwnerOrAdmin
@@ -217,17 +217,17 @@ class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 # ----------------------------
-# RECEIVER TYPE
+# WQUIPMENT TYPE
 # ----------------------------
 
-class ReceiverTypeListView(generics.ListCreateAPIView):
-    queryset = ReceiverType.objects.all().order_by("name")
-    serializer_class = ReceiverTypeSerializer
+class EquipmentTypeListView(generics.ListCreateAPIView):
+    queryset = EquipmentType.objects.all().order_by("category", "name")  # Updated model
+    serializer_class = EquipmentTypeSerializer  # Updated serializer
     permission_classes = [permissions.AllowAny]
 
-class ReceiverTypeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = ReceiverType.objects.all()
-    serializer_class = ReceiverTypeSerializer
+class EquipmentTypeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = EquipmentType.objects.all()  # Updated model
+    serializer_class = EquipmentTypeSerializer  # Updated serializer
     permission_classes = [permissions.AllowAny]
 
 
@@ -295,7 +295,6 @@ def send_sale_email(request):
     )
     return Response({"message": "Email sent!"})
 
-
 # ----------------------------
 # DASHBOARD SUMMARY
 # ----------------------------
@@ -320,11 +319,30 @@ class DashboardSummaryView(APIView):
             or 0
         )
 
-        inventory_breakdown = (
-            Tool.objects.values("category")
+        # FIXED: Show receiver tools by their actual names
+        inventory_breakdown = []
+        
+        # Get all tools that are receivers and group by their names
+        receiver_tools_breakdown = (
+            Tool.objects
+            .filter(category="Receiver")  # Only tools with Receiver category
+            .values("name")  # Group by the tool name (T20, T30, etc.)
             .annotate(count=Count("id"))
-            .order_by("category")
+            .order_by("name")
         )
+        
+        for item in receiver_tools_breakdown:
+            inventory_breakdown.append({
+                "receiver_type": item["name"],  # This will be "T20", "T30", etc.
+                "count": item["count"]
+            })
+
+        # If no receiver tools found
+        if not inventory_breakdown:
+            inventory_breakdown.append({
+                "receiver_type": "No receiver tools",
+                "count": 0
+            })
 
         low_stock_items = list(
             Tool.objects.filter(stock__lte=5).values("id", "name", "code", "category", "stock")[:5]
@@ -336,19 +354,24 @@ class DashboardSummaryView(APIView):
             .order_by("-total_sold")[:5]
         )
 
+        # Get recent sales
+        recent_sales = Sale.objects.select_related('customer', 'tool').order_by('-date_sold')[:10].values(
+            'invoice_number', 'customer__name', 'tool__name', 'cost_sold', 'payment_status'
+        )
+
         return Response(
             {
                 "totalTools": tools_count,
                 "totalStaff": staff_count,
                 "activeCustomers": active_customers,
                 "mtdRevenue": mtd_revenue,
-                "inventoryBreakdown": list(inventory_breakdown),
+                "inventoryBreakdown": inventory_breakdown,
                 "lowStockItems": low_stock_items,
                 "topSellingTools": list(top_selling_tools),
+                "recentSales": list(recent_sales),
             }
         )
-
-
+    
 # ----------------------------
 # PAYMENTS
 # ----------------------------

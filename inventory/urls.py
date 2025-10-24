@@ -1,12 +1,11 @@
 from django.urls import path
 from .views import (
     EmailLoginView,  AddStaffView, StaffListView,
-    ToolListCreateView, ToolDetailView, ReceiverTypeListView,
+    ToolListCreateView, ToolDetailView, EquipmentTypeListView, EquipmentTypeDetailView,
     SaleListCreateView, SaleDetailView,
     PaymentListCreateView, PaymentDetailView,
-    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, SupplierListView, SupplierDetailView, ReceiverTypeDetailView, ReceiverTypeListView,
+    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, SupplierListView, SupplierDetailView,
 )
-
 urlpatterns = [
     # --- Auth ---
     path("auth/login/", EmailLoginView.as_view(), name="login"),
@@ -22,10 +21,9 @@ urlpatterns = [
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
     
-    # Receiver Type
-    path("receiver-types/", ReceiverTypeListView.as_view(), name="receiver-type-list"),
-    path("receiver-types/<int:pk>/", ReceiverTypeDetailView.as_view(), name="receiver-type-detail"),
-
+    # Equipment Type
+    path("equipment-types/", EquipmentTypeListView.as_view(), name="equipment-type-list"),
+    path("equipment-types/<int:pk>/", EquipmentTypeDetailView.as_view(), name="equipment-type-detail"),
 
     # --- Sales ---
     path("sales/", SaleListCreateView.as_view(), name="sales"),
