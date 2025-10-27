@@ -1,7 +1,7 @@
 # serializers.py
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Tool, EquipmentType, Payment, Sale, Customer, Supplier
+from .models import Tool, EquipmentType, Payment, Sale, Customer, Supplier, SaleItem
 
 User = get_user_model()
 
@@ -25,7 +25,6 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 
-# serializers.py - Update ToolSerializer
 class ToolSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source="supplier.name", read_only=True)
     equipment_type_name = serializers.CharField(source="equipment_type.name", read_only=True)
@@ -70,11 +69,19 @@ class SupplierSerializer(serializers.ModelSerializer):
         model = Supplier
         fields = "__all__"
 
-class SaleSerializer(serializers.ModelSerializer):
-    tool = ToolSerializer(read_only=True)
+class SaleItemSerializer(serializers.ModelSerializer):
     tool_id = serializers.PrimaryKeyRelatedField(
         queryset=Tool.objects.all(), source="tool", write_only=True
     )
+    
+    class Meta:
+        model = SaleItem
+        fields = ['id', 'tool_id', 'equipment', 'cost', 'category']
+        read_only_fields = ['id']
+
+
+class SaleSerializer(serializers.ModelSerializer):
+    items = SaleItemSerializer(many=True)
     sold_by = serializers.CharField(source="staff.email", read_only=True)
 
     class Meta:
@@ -83,28 +90,49 @@ class SaleSerializer(serializers.ModelSerializer):
             "id",
             "staff",
             "sold_by",
-            "customer",
-            "tool",
-            "tool_id",
             "name",
             "phone",
             "state",
-            "equipment",
-            "cost_sold",
+            "items",
+            "total_cost",
             "date_sold",
             "invoice_number",
             "payment_plan",
             "expiry_date",
             "payment_status",
         ]
-        read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number", "payment_status", "customer"]
+        read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number", "payment_status"]
 
     def create(self, validated_data):
+        items_data = validated_data.pop('items')
         user = self.context["request"].user
         validated_data["staff"] = user
-        return super().create(validated_data)
+        
+        # Create the sale
+        sale = Sale.objects.create(**validated_data)
+        
+        # Create sale items
+        for item_data in items_data:
+            SaleItem.objects.create(sale=sale, **item_data)
+            
+        return sale
 
-
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', None)
+        
+        # Update sale fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        # Update items if provided
+        if items_data is not None:
+            # Delete existing items and create new ones
+            instance.items.all().delete()
+            for item_data in items_data:
+                SaleItem.objects.create(sale=instance, **item_data)
+                
+        return instance
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer

@@ -209,6 +209,7 @@ class Supplier(models.Model):
 
     def __str__(self):
         return self.name
+    
 #----------------------------
 # SALES 
 #----------------------------
@@ -231,25 +232,11 @@ class Sale(models.Model):
         blank=True,
     )
 
-    # 🔹 FIX: Make customer optional
-    customer = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="purchases",
-        limit_choices_to={"role": "customer"},
-        null=True,  # Add this
-        blank=True, # Add this
-    )
-
-    # 🔹 Which tool was sold
-    tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
-
-    # 🔹 Sale details
+    # 🔹 Customer information (stored directly in Sale)
     name = models.CharField(max_length=255)
     phone = models.CharField(max_length=20)
     state = models.CharField(max_length=100)
-    equipment = models.CharField(max_length=255)
-    cost_sold = models.DecimalField(max_digits=10, decimal_places=2)
+    total_cost = models.DecimalField(max_digits=10, decimal_places=2)
     date_sold = models.DateField(default=date.today)
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
@@ -259,19 +246,32 @@ class Sale(models.Model):
     )
 
     def __str__(self):
-        return f"{self.name} - {self.equipment}"
+        return f"{self.name} - {self.invoice_number}"
 
     def save(self, *args, **kwargs):
-        """Auto-generate invoice and handle stock on creation."""
+        """Auto-generate invoice number on creation."""
         if not self.invoice_number:
             self.invoice_number = f"INV-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-
-        # Deduct stock on first save only
-        if not self.pk and self.tool.stock > 0:
-            self.tool.decrease_stock()
-
         super().save(*args, **kwargs)
 
+
+class SaleItem(models.Model):
+    """Individual items within a sale"""
+    sale = models.ForeignKey(Sale, related_name="items", on_delete=models.CASCADE)
+    tool = models.ForeignKey(Tool, on_delete=models.CASCADE)
+    equipment = models.CharField(max_length=255)
+    cost = models.DecimalField(max_digits=10, decimal_places=2)
+    category = models.CharField(max_length=100, blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.equipment} - ₦{self.cost}"
+
+    def save(self, *args, **kwargs):
+        """Deduct stock on first save only"""
+        if not self.pk and self.tool.stock > 0:
+            self.tool.decrease_stock()
+        super().save(*args, **kwargs)
+        
 # ----------------------------
 #  PAYMENTS
 # ----------------------------

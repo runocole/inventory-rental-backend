@@ -1,7 +1,7 @@
 from django.db import models
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
-from .models import Tool, Payment, Sale, Customer, EquipmentType, Supplier
+from .models import Tool, Payment, Sale, Customer, EquipmentType, Supplier, SaleItem
 from .serializers import (
     UserSerializer, ToolSerializer, EquipmentTypeSerializer,
     PaymentSerializer, SaleSerializer, CustomerSerializer, SupplierSerializer
@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Max
 from django.core.mail import send_mail, BadHeaderError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
@@ -292,6 +292,9 @@ class SaleListCreateView(generics.ListCreateAPIView):
             return Sale.objects.all().order_by("-date_sold")
         return Sale.objects.none()
 
+    def perform_create(self, serializer):
+        serializer.save(staff=self.request.user)
+
 
 class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SaleSerializer
@@ -311,7 +314,6 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
         if user.role == "staff" and instance.staff != user:
             raise PermissionDenied("You can only edit your own sales.")
         return super().perform_update(serializer)
-
 # ----------------------------
 # EMAIL API
 # ----------------------------
@@ -340,7 +342,7 @@ class DashboardSummaryView(APIView):
         user = request.user
 
         total_sales = Sale.objects.count()
-        total_revenue = Sale.objects.aggregate(total=Sum("cost_sold"))["total"] or 0
+        total_revenue = Sale.objects.aggregate(total=Sum("total_cost"))["total"] or 0  # Changed from cost_sold to total_cost
         tools_count = Tool.objects.count()
         staff_count = User.objects.filter(role="staff").count()
         active_customers = Customer.objects.filter(is_activated=True).count()
@@ -349,7 +351,7 @@ class DashboardSummaryView(APIView):
         month_start = today.replace(day=1)
         mtd_revenue = (
             Sale.objects.filter(date_sold__gte=month_start)
-            .aggregate(total=Sum("cost_sold"))
+            .aggregate(total=Sum("total_cost"))  # Changed from cost_sold to total_cost
             .get("total")
             or 0
         )
@@ -383,16 +385,29 @@ class DashboardSummaryView(APIView):
             Tool.objects.filter(stock__lte=5).values("id", "name", "code", "category", "stock")[:5]
         )
 
+        # FIXED: Top selling tools - now through SaleItem
         top_selling_tools = (
-            Sale.objects.values("tool__name")
+            SaleItem.objects.values("tool__name")
             .annotate(total_sold=Count("id"))
             .order_by("-total_sold")[:5]
         )
 
-        # Get recent sales
-        recent_sales = Sale.objects.select_related('customer', 'tool').order_by('-date_sold')[:10].values(
-            'invoice_number', 'customer__name', 'tool__name', 'cost_sold', 'payment_status'
-        )
+        # FIXED: Get recent sales with items
+        recent_sales = Sale.objects.prefetch_related('items').order_by('-date_sold')[:10]
+        recent_sales_data = []
+        for sale in recent_sales:
+            # Get the first item's equipment name for display
+            first_item = sale.items.first()
+            tool_name = first_item.equipment if first_item else "No equipment"
+            
+            recent_sales_data.append({
+                'invoice_number': sale.invoice_number,
+                'customer_name': sale.name,
+                'tool_name': tool_name,
+                'cost_sold': sale.total_cost,  # Changed from cost_sold to total_cost
+                'payment_status': sale.payment_status,
+                'date_sold': sale.date_sold,
+            })
 
         return Response(
             {
@@ -403,10 +418,9 @@ class DashboardSummaryView(APIView):
                 "inventoryBreakdown": inventory_breakdown,
                 "lowStockItems": low_stock_items,
                 "topSellingTools": list(top_selling_tools),
-                "recentSales": list(recent_sales),
+                "recentSales": recent_sales_data,
             }
         )
-    
 # ----------------------------
 # PAYMENTS
 # ----------------------------
