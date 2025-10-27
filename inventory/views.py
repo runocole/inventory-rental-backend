@@ -17,7 +17,7 @@ from django.core.mail import send_mail, BadHeaderError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 from django.conf import settings
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 import secrets, uuid, traceback
 
 
@@ -312,22 +312,24 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
             raise PermissionDenied("You can only edit your own sales.")
         return super().perform_update(serializer)
 
-
 # ----------------------------
 # EMAIL API
 # ----------------------------
 @api_view(["POST"])
+@permission_classes([AllowAny])  
 def send_sale_email(request):
-    data = request.data
-    send_mail(
-        data.get("subject"),
-        data.get("message"),
-        "runocole@gmail.com",
-        [data.get("to_email")],
-        fail_silently=False,
-    )
-    return Response({"message": "Email sent!"})
-
+    try:
+        data = request.data
+        send_mail(
+            subject=data.get("subject", "Your Payment Link"),
+            message=data.get("message", "Hello, your payment link will be available soon."),
+            from_email="runocole@gmail.com",  
+            recipient_list=[data.get("to_email")],
+            fail_silently=False,
+        )
+        return Response({"message": "Email sent successfully!"})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
 # ----------------------------
 # DASHBOARD SUMMARY
 # ----------------------------

@@ -25,8 +25,11 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 
+# serializers.py - Update ToolSerializer
 class ToolSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source="supplier.name", read_only=True)
+    equipment_type_name = serializers.CharField(source="equipment_type.name", read_only=True)
+    equipment_type_id = serializers.CharField(source="equipment_type.id", read_only=True)
 
     class Meta:
         model = Tool
@@ -40,6 +43,9 @@ class ToolSerializer(serializers.ModelSerializer):
             "stock",
             "supplier",
             "supplier_name",
+            "equipment_type",  
+            "equipment_type_name",  
+            "equipment_type_id",  
             "is_enabled",
             "invoice_number",
             "date_added",
@@ -64,16 +70,10 @@ class SupplierSerializer(serializers.ModelSerializer):
         model = Supplier
         fields = "__all__"
 
-
 class SaleSerializer(serializers.ModelSerializer):
     tool = ToolSerializer(read_only=True)
     tool_id = serializers.PrimaryKeyRelatedField(
         queryset=Tool.objects.all(), source="tool", write_only=True
-    )
-    customer_id = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(role="customer"),
-        source="customer",
-        write_only=True,
     )
     sold_by = serializers.CharField(source="staff.email", read_only=True)
 
@@ -84,7 +84,6 @@ class SaleSerializer(serializers.ModelSerializer):
             "staff",
             "sold_by",
             "customer",
-            "customer_id",
             "tool",
             "tool_id",
             "name",
@@ -98,7 +97,7 @@ class SaleSerializer(serializers.ModelSerializer):
             "expiry_date",
             "payment_status",
         ]
-        read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number", "payment_status"]
+        read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number", "payment_status", "customer"]
 
     def create(self, validated_data):
         user = self.context["request"].user

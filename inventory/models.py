@@ -91,63 +91,6 @@ def create_user_for_customer(sender, instance, created, **kwargs):
 # ----------------------------
 #  TOOLS MODEL
 # ----------------------------
-import uuid
-from django.db import models
-
-
-class Tool(models.Model):
-    CATEGORY_CHOICES = (
-        ("Receiver", "Receiver"),
-        ("Accessory", "Accessory"),
-        ("Total Station", "Total Station"),
-        ("Level", "Level"),
-        ("Drones", "Drones"),
-        ("EcoSounder", "EcoSounder"),
-        ("Laser Scanner", "Laser Scanner"),
-        ("Other", "Other"),
-    )
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100)
-    code = models.CharField(max_length=100, unique=True)
-    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
-    description = models.TextField(blank=True)
-    cost = models.DecimalField(max_digits=10, decimal_places=2)
-    stock = models.PositiveIntegerField(default=1)
-
-    # 🔹 Dynamic ForeignKey to Supplier (instead of hardcoded choices)
-    supplier = models.ForeignKey(
-        "Supplier",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="tools",
-    )
-
-    is_enabled = models.BooleanField(default=True)
-    invoice_number = models.CharField(max_length=50, blank=True, null=True)
-    date_added = models.DateTimeField(auto_now_add=True)
-
-    # Optional: to store multiple serials if needed
-    serials = models.JSONField(default=list, blank=True)
-
-    def __str__(self):
-        return f"{self.name} ({self.code})"
-
-    # --- Utility Methods ---
-    def decrease_stock(self):
-        """Reduce stock by 1 and save."""
-        if self.stock > 0:
-            self.stock -= 1
-            self.save(update_fields=["stock"])
-
-    def increase_stock(self):
-        """Increase stock by 1 and save."""
-        self.stock += 1
-        self.save(update_fields=["stock"])
-# ----------------------------
-#  TOOLS MODEL
-# ----------------------------
 class Tool(models.Model):
     CATEGORY_CHOICES = (
         ("Receiver", "Receiver"),
@@ -214,7 +157,8 @@ class Tool(models.Model):
         """Display equipment type if available"""
         if self.equipment_type:
             return self.equipment_type.name
-        return "N/A"     
+        return "N/A"   
+      
 # ----------------------------
 #  EQUIPMENT TYPES
 # ----------------------------        
@@ -265,11 +209,10 @@ class Supplier(models.Model):
 
     def __str__(self):
         return self.name
+#----------------------------
+# SALES 
+#----------------------------
 
-
-# ----------------------------
-#  SALES (Staff-managed)
-# ----------------------------
 class Sale(models.Model):
     PAYMENT_STATUS_CHOICES = (
         ("pending", "Pending"),
@@ -281,19 +224,21 @@ class Sale(models.Model):
     # 🔹 Who made the sale (staff)
     staff = models.ForeignKey(
         User,
-        on_delete=models.SET_NULL,   # safer than CASCADE to keep sales history
+        on_delete=models.SET_NULL,
         related_name="sales_made",
         limit_choices_to={"role": "staff"},
-        null=True,                   # allow null for existing rows
-        blank=True,                  # allow blank in admin/forms
+        null=True,
+        blank=True,
     )
 
-    # 🔹 Which customer the sale is for
+    # 🔹 FIX: Make customer optional
     customer = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name="purchases",
         limit_choices_to={"role": "customer"},
+        null=True,  # Add this
+        blank=True, # Add this
     )
 
     # 🔹 Which tool was sold
