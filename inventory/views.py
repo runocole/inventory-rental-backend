@@ -215,21 +215,54 @@ class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ToolSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-
 # ----------------------------
-# WQUIPMENT TYPE
+# EQUIPMENT TYPE
 # ----------------------------
 
 class EquipmentTypeListView(generics.ListCreateAPIView):
-    queryset = EquipmentType.objects.all().order_by("category", "name")  # Updated model
-    serializer_class = EquipmentTypeSerializer  # Updated serializer
+    serializer_class = EquipmentTypeSerializer
     permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        queryset = EquipmentType.objects.all().order_by("category", "name")
+        
+        # Filter by invoice_number if provided
+        invoice_number = self.request.query_params.get('invoice_number')
+        if invoice_number:
+            queryset = queryset.filter(invoice_number=invoice_number)
+        
+        # Filter by category if provided
+        category = self.request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category=category)
+            
+        return queryset
 
 class EquipmentTypeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = EquipmentType.objects.all()  # Updated model
-    serializer_class = EquipmentTypeSerializer  # Updated serializer
+    queryset = EquipmentType.objects.all()
+    serializer_class = EquipmentTypeSerializer
     permission_classes = [permissions.AllowAny]
 
+# NEW VIEW: Get equipment grouped by invoice
+@api_view(['GET'])
+def equipment_by_invoice(request):
+    """
+    Get equipment types grouped by invoice number with counts and totals
+    """
+    from django.db.models import F, FloatField
+    from django.db.models.functions import Cast
+    
+    invoices = EquipmentType.objects.exclude(invoice_number__isnull=True)\
+        .exclude(invoice_number__exact='')\
+        .values('invoice_number')\
+        .annotate(
+            equipment_count=Count('id'),
+            total_value=Sum('default_cost'),
+            last_updated=Max('created_at')
+        )\
+        .order_by('-last_updated')
+    
+    return Response(list(invoices))
 
 #-------------------
 # SUPPLIERS

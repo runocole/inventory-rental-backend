@@ -214,7 +214,7 @@ class Tool(models.Model):
         """Display equipment type if available"""
         if self.equipment_type:
             return self.equipment_type.name
-        return "N/A"
+        return "N/A"     
 # ----------------------------
 #  EQUIPMENT TYPES
 # ----------------------------        
@@ -234,13 +234,18 @@ class EquipmentType(models.Model):
     default_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="Receiver")
     description = models.TextField(blank=True, null=True)
+    invoice_number = models.CharField(max_length=100, blank=True, null=True)  # NEW FIELD
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.category} - {self.name}"
 
-# Update the model name in your admin if needed
+    class Meta:
+        indexes = [
+            models.Index(fields=['invoice_number']),
+            models.Index(fields=['category']),
+        ]
     
 #----------------------------
 # SUPPLIERS 

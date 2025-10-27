@@ -56,7 +56,7 @@ class ToolSerializer(serializers.ModelSerializer):
 class EquipmentTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = EquipmentType  
-        fields = ["id", "name", "default_cost", "category", "description", "created_at"]
+        fields = ["id", "name", "default_cost", "category", "description", "invoice_number", "created_at"]
 
 
 class SupplierSerializer(serializers.ModelSerializer):

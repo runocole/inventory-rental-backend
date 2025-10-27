@@ -4,7 +4,7 @@ from .views import (
     ToolListCreateView, ToolDetailView, EquipmentTypeListView, EquipmentTypeDetailView,
     SaleListCreateView, SaleDetailView,
     PaymentListCreateView, PaymentDetailView,
-    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, SupplierListView, SupplierDetailView,
+    DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, SupplierListView, SupplierDetailView,  equipment_by_invoice,
 )
 urlpatterns = [
     # --- Auth ---
@@ -24,6 +24,7 @@ urlpatterns = [
     # Equipment Type
     path("equipment-types/", EquipmentTypeListView.as_view(), name="equipment-type-list"),
     path("equipment-types/<int:pk>/", EquipmentTypeDetailView.as_view(), name="equipment-type-detail"),
+    path("equipment-types/by-invoice/", equipment_by_invoice, name="equipment-by-invoice"),
 
     # --- Sales ---
     path("sales/", SaleListCreateView.as_view(), name="sales"),
@@ -32,10 +33,11 @@ urlpatterns = [
     # Payments
     path('payments/', PaymentListCreateView.as_view(), name='payments'),
     path('payments/<int:pk>/', PaymentDetailView.as_view(), name='payment-detail'),
+    
     #Suppliers
-
     path('suppliers/', SupplierListView.as_view(), name='suppliers'),
     path('suppliers/<uuid:pk>/', SupplierDetailView.as_view(), name='supplier-detail'),
+
     # Dashboard
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
 ]   
