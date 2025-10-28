@@ -185,7 +185,6 @@ class CustomerListView(generics.ListAPIView):
             return Customer.objects.all().order_by("-id")
         return Customer.objects.all().order_by("-id")
 
-
 # ----------------------------
 # TOOLS
 # ----------------------------
