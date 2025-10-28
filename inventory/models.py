@@ -91,6 +91,8 @@ def create_user_for_customer(sender, instance, created, **kwargs):
 # ----------------------------
 #  TOOLS MODEL
 # ----------------------------
+
+
 class Tool(models.Model):
     CATEGORY_CHOICES = (
         ("Receiver", "Receiver"),
@@ -133,6 +135,9 @@ class Tool(models.Model):
     is_enabled = models.BooleanField(default=True)
     invoice_number = models.CharField(max_length=50, blank=True, null=True)
     date_added = models.DateTimeField(auto_now_add=True)
+    
+    # NEW: Expiry date field
+    expiry_date = models.DateField(null=True, blank=True, verbose_name="Expiry Date")
 
     # Optional: to store multiple serials if needed
     serials = models.JSONField(default=list, blank=True)
@@ -157,8 +162,25 @@ class Tool(models.Model):
         """Display equipment type if available"""
         if self.equipment_type:
             return self.equipment_type.name
-        return "N/A"   
-      
+        return "N/A"
+
+    @property
+    def is_expired(self):
+        """Check if the tool is expired"""
+        if self.expiry_date:
+            from django.utils import timezone
+            return self.expiry_date < timezone.now().date()
+        return False
+
+    @property
+    def expires_soon(self):
+        """Check if the tool expires within 30 days"""
+        if self.expiry_date:
+            from django.utils import timezone
+            from datetime import timedelta
+            thirty_days_from_now = timezone.now().date() + timedelta(days=30)
+            return timezone.now().date() < self.expiry_date <= thirty_days_from_now
+        return False
 # ----------------------------
 #  EQUIPMENT TYPES
 # ----------------------------        

@@ -2,6 +2,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import Tool, EquipmentType, Payment, Sale, Customer, Supplier, SaleItem
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -24,11 +25,12 @@ class UserSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
-
 class ToolSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source="supplier.name", read_only=True)
     equipment_type_name = serializers.CharField(source="equipment_type.name", read_only=True)
     equipment_type_id = serializers.CharField(source="equipment_type.id", read_only=True)
+    box_type = serializers.CharField(source="description", read_only=True)  # Map description to box_type for frontend
+    invoice_no = serializers.CharField(source="invoice_number", read_only=True)  # Map invoice_number to invoice_no
 
     class Meta:
         model = Tool
@@ -38,6 +40,7 @@ class ToolSerializer(serializers.ModelSerializer):
             "code",
             "category",
             "description",
+            "box_type",  # Added for frontend compatibility
             "cost",
             "stock",
             "supplier",
@@ -47,15 +50,26 @@ class ToolSerializer(serializers.ModelSerializer):
             "equipment_type_id",  
             "is_enabled",
             "invoice_number",
+            "invoice_no",  # Added for frontend compatibility
             "date_added",
+            "expiry_date",  # NEW: Added expiry_date
             "serials",
         ]
+        extra_kwargs = {
+            'expiry_date': {'required': False, 'allow_null': True}
+        }
 
     def validate_serials(self, value):
         if not isinstance(value, list):
             raise serializers.ValidationError("Serials must be a list.")
         if not all(isinstance(s, str) for s in value):
             raise serializers.ValidationError("Each serial must be a string.")
+        return value
+
+    def validate_expiry_date(self, value):
+        """Validate that expiry date is not in the past when creating/updating"""
+        if value and value < timezone.now().date():
+            raise serializers.ValidationError("Expiry date cannot be in the past.")
         return value
 
 class EquipmentTypeSerializer(serializers.ModelSerializer):
