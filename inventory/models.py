@@ -220,7 +220,46 @@ class Tool(models.Model):
             })
             
         self.save(update_fields=["sold_serials"])
-
+    def get_serial_set_count(self):
+        """Return how many serials are in a set for this equipment type"""
+        if "base only" in self.description.lower():
+            return 2  # Base Only: receiver + datalogger
+        elif "rover only" in self.description.lower():
+            return 2  # Rover Only: receiver + datalogger  
+        elif "combo" in self.description.lower():
+            return 4  # Base & Rover Combo: 2 receivers + 2 dataloggers
+        else:
+            return 1  # Default single item
+    
+    def get_random_serial_set(self):
+        """Get a complete set of serial numbers based on equipment type"""
+        if not self.available_serials:
+            return None
+            
+        set_count = self.get_serial_set_count()
+        
+        if len(self.available_serials) < set_count:
+            return None
+            
+        # Take the first 'set_count' serials as a set
+        serial_set = self.available_serials[:set_count]
+        
+        # Remove from available
+        self.available_serials = self.available_serials[set_count:]
+        
+        # Add to sold serials
+        if self.sold_serials is None:
+            self.sold_serials = []
+            
+        self.sold_serials.append({
+            'serial_set': serial_set,
+            'date_sold': timezone.now().isoformat(),
+            'set_type': self.description  # Store what type of set this was
+        })
+        
+        self.save(update_fields=["available_serials", "sold_serials"])
+        return serial_set
+    
     @property
     def display_equipment_type(self):
         """Display equipment type if available"""

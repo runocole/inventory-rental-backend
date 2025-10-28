@@ -287,6 +287,7 @@ class ToolGroupedListView(APIView):
         
         return Response(result)
 
+# NEW: Assign random tool from group
 class ToolAssignRandomFromGroupView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     
@@ -297,7 +298,7 @@ class ToolAssignRandomFromGroupView(APIView):
         if not tool_name:
             return Response({"error": "Tool name is required."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Find all available tools with this name and category that have serials
+        # Find all available tools with this name and category that have enough serials
         available_tools = Tool.objects.filter(
             name=tool_name, 
             category=category,
@@ -305,28 +306,29 @@ class ToolAssignRandomFromGroupView(APIView):
             is_enabled=True
         )
         
-        # Filter tools that actually have available serials
-        tools_with_serials = []
+        # Filter tools that have enough serials for a complete set
+        tools_with_enough_serials = []
         for tool in available_tools:
-            if tool.available_serials and len(tool.available_serials) > 0:
-                tools_with_serials.append(tool)
+            set_count = tool.get_serial_set_count()
+            if tool.available_serials and len(tool.available_serials) >= set_count:
+                tools_with_enough_serials.append(tool)
         
-        if not tools_with_serials:
+        if not tools_with_enough_serials:
             return Response(
-                {"error": f"No {tool_name} tools with available serial numbers in stock."},
+                {"error": f"No complete {tool_name} sets available in stock."},
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Select a random tool from available ones with serials
+        # Select a random tool from available ones
         import random
-        selected_tool = random.choice(tools_with_serials)
+        selected_tool = random.choice(tools_with_enough_serials)
         
-        # Get a random serial number
-        serial_number = selected_tool.get_random_serial()
+        # Get a complete serial SET (2 or 4 serials depending on equipment type)
+        serial_set = selected_tool.get_random_serial_set()
         
-        if not serial_number:
+        if not serial_set:
             return Response(
-                {"error": "Failed to get random serial number from selected tool."},
+                {"error": "Failed to get complete serial set from selected tool."},
                 status=status.HTTP_404_NOT_FOUND
             )
         
@@ -336,7 +338,9 @@ class ToolAssignRandomFromGroupView(APIView):
         return Response({
             "assigned_tool_id": selected_tool.id,
             "tool_name": selected_tool.name,
-            "serial_number": serial_number,
+            "serial_set": serial_set,  # This is now an ARRAY of serials
+            "serial_count": len(serial_set),
+            "set_type": selected_tool.description,
             "cost": str(selected_tool.cost),
             "description": selected_tool.description,
             "remaining_stock": selected_tool.stock
