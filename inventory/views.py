@@ -189,6 +189,7 @@ class CustomerListView(generics.ListAPIView):
 # ----------------------------
 # TOOLS
 # ----------------------------
+
 class ToolListCreateView(generics.ListCreateAPIView):
     serializer_class = ToolSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -196,6 +197,25 @@ class ToolListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         queryset = Tool.objects.select_related("supplier").order_by("-date_added")
+
+        # Filter by category and equipment type if provided
+        category = self.request.query_params.get('category')
+        equipment_type = self.request.query_params.get('equipment_type')
+        
+        if category:
+            queryset = queryset.filter(category=category)
+            
+        if equipment_type:
+            # For Receiver category, filter by description/box_type based on equipment_type
+            if category == "Receiver":
+                if equipment_type == "Base Only":
+                    queryset = queryset.filter(description__icontains="base").exclude(description__icontains="rover")
+                elif equipment_type == "Rover Only":
+                    queryset = queryset.filter(description__icontains="rover").exclude(description__icontains="base")
+                elif equipment_type == "Base & Rover Combo":
+                    queryset = queryset.filter(description__icontains="base").filter(description__icontains="rover")
+                elif equipment_type == "Accessories":
+                    queryset = queryset.filter(description__icontains="accessory")
 
         if getattr(user, "role", None) == "customer":
             queryset = queryset.filter(stock__gt=0, is_enabled=True)
@@ -206,14 +226,189 @@ class ToolListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         if getattr(user, "role", None) == "customer":
             raise permissions.PermissionDenied("Customers cannot add tools.")
+        
+        # Initialize available_serials with serials if not provided
+        tool_data = serializer.validated_data
+        if 'available_serials' not in tool_data or not tool_data['available_serials']:
+            if 'serials' in tool_data and tool_data['serials']:
+                tool_data['available_serials'] = tool_data['serials'].copy()
+                
         serializer.save()
 
+# NEW: Get tools grouped by name for frontend display
+class ToolGroupedListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = self.request.user
+        category = request.query_params.get('category')
+        equipment_type = request.query_params.get('equipment_type')
+        
+        # Start with base queryset
+        queryset = Tool.objects.filter(stock__gt=0, is_enabled=True)
+        
+        if category:
+            queryset = queryset.filter(category=category)
+            
+        if equipment_type and category == "Receiver":
+            # Apply equipment type filtering for Receiver category
+            if equipment_type == "Base Only":
+                queryset = queryset.filter(description__icontains="base").exclude(description__icontains="rover")
+            elif equipment_type == "Rover Only":
+                queryset = queryset.filter(description__icontains="rover").exclude(description__icontains="base")
+            elif equipment_type == "Base & Rover Combo":
+                queryset = queryset.filter(description__icontains="base").filter(description__icontains="rover")
+            elif equipment_type == "Accessories":
+                queryset = queryset.filter(description__icontains="accessory")
+        
+        # Group tools by name and calculate total stock
+        from django.db.models import Sum, Count
+        grouped_tools = queryset.values('name', 'category', 'cost').annotate(
+            total_stock=Sum('stock'),
+            tool_count=Count('id'),
+            available_serials_count=Sum('stock')  # Assuming each stock item has one serial
+        ).order_by('name')
+        
+        # Convert to list and add additional info
+        result = []
+        for tool_group in grouped_tools:
+            # Get one sample tool for additional fields
+            sample_tool = queryset.filter(name=tool_group['name']).first()
+            if sample_tool:
+                result.append({
+                    'name': tool_group['name'],
+                    'category': tool_group['category'],
+                    'cost': tool_group['cost'],
+                    'total_stock': tool_group['total_stock'],
+                    'tool_count': tool_group['tool_count'],
+                    'description': sample_tool.description,
+                    'supplier_name': sample_tool.supplier.name if sample_tool.supplier else None,
+                    'group_id': f"group_{tool_group['name'].replace(' ', '_').lower()}"
+                })
+        
+        return Response(result)
 
+class ToolAssignRandomFromGroupView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        tool_name = request.data.get('tool_name')
+        category = request.data.get('category')
+        
+        if not tool_name:
+            return Response({"error": "Tool name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Find all available tools with this name and category that have serials
+        available_tools = Tool.objects.filter(
+            name=tool_name, 
+            category=category,
+            stock__gt=0,
+            is_enabled=True
+        )
+        
+        # Filter tools that actually have available serials
+        tools_with_serials = []
+        for tool in available_tools:
+            if tool.available_serials and len(tool.available_serials) > 0:
+                tools_with_serials.append(tool)
+        
+        if not tools_with_serials:
+            return Response(
+                {"error": f"No {tool_name} tools with available serial numbers in stock."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Select a random tool from available ones with serials
+        import random
+        selected_tool = random.choice(tools_with_serials)
+        
+        # Get a random serial number
+        serial_number = selected_tool.get_random_serial()
+        
+        if not serial_number:
+            return Response(
+                {"error": "Failed to get random serial number from selected tool."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Update the stock count
+        selected_tool.decrease_stock()
+        
+        return Response({
+            "assigned_tool_id": selected_tool.id,
+            "tool_name": selected_tool.name,
+            "serial_number": serial_number,
+            "cost": str(selected_tool.cost),
+            "description": selected_tool.description,
+            "remaining_stock": selected_tool.stock
+        })
 
+# NEW: Get random serial number for a tool
+class ToolGetRandomSerialView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, pk):
+        try:
+            tool = get_object_or_404(Tool, pk=pk)
+            
+            if not tool.available_serials:
+                return Response(
+                    {"error": "No available serial numbers for this tool."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            random_serial = tool.get_random_serial()
+            
+            if not random_serial:
+                return Response(
+                    {"error": "Failed to get random serial number."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            return Response({
+                "serial_number": random_serial,
+                "tool_name": tool.name,
+                "remaining_serials": len(tool.available_serials)
+            })
+            
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 class ToolDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Tool.objects.all()
     serializer_class = ToolSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+class ToolSoldSerialsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, pk):
+        tool = get_object_or_404(Tool, pk=pk)
+        
+        sold_serials = []
+        for serial_info in tool.sold_serials or []:
+            if isinstance(serial_info, dict):
+                sold_serials.append({
+                    'serial': serial_info.get('serial', 'Unknown'),
+                    'sale_id': serial_info.get('sale_id'),
+                    'customer_name': serial_info.get('customer_name', 'Unknown'),
+                    'date_sold': serial_info.get('date_sold'),
+                    'invoice_number': serial_info.get('invoice_number')
+                })
+            else:
+                # Handle case where serial_info is just a string
+                sold_serials.append({
+                    'serial': serial_info,
+                    'sale_id': None,
+                    'customer_name': 'Unknown',
+                    'date_sold': None,
+                    'invoice_number': None
+                })
+                
+        return Response(sold_serials)
 
 # ----------------------------
 # EQUIPMENT TYPE
@@ -314,6 +509,7 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
         if user.role == "staff" and instance.staff != user:
             raise PermissionDenied("You can only edit your own sales.")
         return super().perform_update(serializer)
+
 # ----------------------------
 # EMAIL API
 # ----------------------------
@@ -332,6 +528,7 @@ def send_sale_email(request):
         return Response({"message": "Email sent successfully!"})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+
 # ----------------------------
 # DASHBOARD SUMMARY
 # ----------------------------
@@ -421,6 +618,7 @@ class DashboardSummaryView(APIView):
                 "recentSales": recent_sales_data,
             }
         )
+
 # ----------------------------
 # PAYMENTS
 # ----------------------------

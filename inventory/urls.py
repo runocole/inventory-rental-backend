@@ -6,8 +6,8 @@ from .views import (
     PaymentListCreateView, PaymentDetailView,
     DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, 
     SupplierListView, SupplierDetailView, equipment_by_invoice,
+    ToolGetRandomSerialView, ToolSoldSerialsView,  ToolGroupedListView, ToolAssignRandomFromGroupView,
 )
-
 urlpatterns = [
     # --- Auth ---
     path("auth/login/", EmailLoginView.as_view(), name="login"),
@@ -21,6 +21,11 @@ urlpatterns = [
     # --- Tools ---
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
+    path("tools/grouped/", ToolGroupedListView.as_view(), name="tool-grouped-list"),
+    path("tools/assign-random/", ToolAssignRandomFromGroupView.as_view(), name="tool-assign-random"),
+    path("tools/<uuid:pk>/get-random-serial/", ToolGetRandomSerialView.as_view(), name="tool-get-random-serial"),
+    path("tools/<uuid:pk>/sold-serials/", ToolSoldSerialsView.as_view(), name="tool-sold-serials"),
+  
     
     # Equipment Type
     path("equipment-types/", EquipmentTypeListView.as_view(), name="equipment-type-list"),

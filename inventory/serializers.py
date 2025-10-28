@@ -1,4 +1,3 @@
-# serializers.py
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import Tool, EquipmentType, Payment, Sale, Customer, Supplier, SaleItem
@@ -54,6 +53,8 @@ class ToolSerializer(serializers.ModelSerializer):
             "date_added",
             "expiry_date",  # NEW: Added expiry_date
             "serials",
+            "available_serials",  # NEW: Added available_serials
+            "sold_serials",       # NEW: Added sold_serials
         ]
         extra_kwargs = {
             'expiry_date': {'required': False, 'allow_null': True}
@@ -90,8 +91,18 @@ class SaleItemSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = SaleItem
-        fields = ['id', 'tool_id', 'equipment', 'cost', 'category']
+        fields = ['id', 'tool_id', 'equipment', 'cost', 'category', 'serial_number']  # NEW: Added serial_number
         read_only_fields = ['id']
+
+    def create(self, validated_data):
+        # Get a random serial number if not provided
+        tool = validated_data.get('tool')
+        if tool and not validated_data.get('serial_number'):
+            random_serial = tool.get_random_serial()
+            if random_serial:
+                validated_data['serial_number'] = random_serial
+                
+        return super().create(validated_data)
 
 
 class SaleSerializer(serializers.ModelSerializer):
@@ -147,6 +158,7 @@ class SaleSerializer(serializers.ModelSerializer):
                 SaleItem.objects.create(sale=instance, **item_data)
                 
         return instance
+
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer

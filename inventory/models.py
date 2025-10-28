@@ -6,7 +6,7 @@ from django.db.models.signals import post_save
 import uuid, random, string
 from datetime import date
 from django.contrib.auth import get_user_model
-
+from django.utils import timezone
 # ----------------------------
 #  USER
 # ----------------------------
@@ -141,6 +141,10 @@ class Tool(models.Model):
 
     # Optional: to store multiple serials if needed
     serials = models.JSONField(default=list, blank=True)
+    
+    # NEW: Serial number tracking fields
+    available_serials = models.JSONField(default=list, blank=True)  # Available serial numbers
+    sold_serials = models.JSONField(default=list, blank=True)       # Sold serial numbers with sale info
 
     def __str__(self):
         return f"{self.name} ({self.code})"
@@ -156,6 +160,65 @@ class Tool(models.Model):
         """Increase stock by 1 and save."""
         self.stock += 1
         self.save(update_fields=["stock"])
+        
+    def get_random_serial(self):
+        """Get a random serial number from available_serials"""
+        if not self.available_serials or len(self.available_serials) == 0:
+            return None
+            
+        import random
+        random_serial = random.choice(self.available_serials) 
+        
+        # Remove from available and add to sold
+        self.available_serials.remove(random_serial)
+        
+        # Initialize sold_serials if None
+        if self.sold_serials is None:
+            self.sold_serials = []
+            
+        # Add to sold serials with basic info
+        self.sold_serials.append({
+            'serial': random_serial,
+            'date_sold': timezone.now().isoformat()
+        })
+        
+        self.save(update_fields=["available_serials", "sold_serials"])
+        return random_serial
+        
+    def add_sold_serial_info(self, serial, sale_id, customer_name, invoice_number=None):
+        """Add sale information to a sold serial"""
+        if not self.sold_serials:
+            self.sold_serials = []
+            
+        # Find the serial and add sale info
+        for i, sold_serial in enumerate(self.sold_serials):
+            if isinstance(sold_serial, dict) and sold_serial.get('serial') == serial:
+                self.sold_serials[i]['sale_id'] = sale_id
+                self.sold_serials[i]['customer_name'] = customer_name
+                self.sold_serials[i]['date_sold'] = date.today().isoformat()
+                self.sold_serials[i]['invoice_number'] = invoice_number
+                break
+            elif sold_serial == serial:
+                # Convert string to dict with sale info
+                self.sold_serials[i] = {
+                    'serial': serial,
+                    'sale_id': sale_id,
+                    'customer_name': customer_name,
+                    'date_sold': date.today().isoformat(),
+                    'invoice_number': invoice_number
+                }
+                break
+        else:
+            # Serial not found in sold_serials, add new entry
+            self.sold_serials.append({
+                'serial': serial,
+                'sale_id': sale_id,
+                'customer_name': customer_name,
+                'date_sold': date.today().isoformat(),
+                'invoice_number': invoice_number
+            })
+            
+        self.save(update_fields=["sold_serials"])
 
     @property
     def display_equipment_type(self):
@@ -181,6 +244,7 @@ class Tool(models.Model):
             thirty_days_from_now = timezone.now().date() + timedelta(days=30)
             return timezone.now().date() < self.expiry_date <= thirty_days_from_now
         return False
+
 # ----------------------------
 #  EQUIPMENT TYPES
 # ----------------------------        
@@ -284,6 +348,7 @@ class SaleItem(models.Model):
     equipment = models.CharField(max_length=255)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     category = models.CharField(max_length=100, blank=True, null=True)
+    serial_number = models.CharField(max_length=100, blank=True, null=True)  # NEW: Track which serial was sold
 
     def __str__(self):
         return f"{self.equipment} - ₦{self.cost}"
@@ -292,6 +357,16 @@ class SaleItem(models.Model):
         """Deduct stock on first save only"""
         if not self.pk and self.tool.stock > 0:
             self.tool.decrease_stock()
+            
+            # If serial number is provided, mark it as sold in the tool
+            if self.serial_number and self.sale_id:
+                self.tool.add_sold_serial_info(
+                    serial=self.serial_number,
+                    sale_id=self.sale_id,
+                    customer_name=self.sale.name,
+                    invoice_number=self.sale.invoice_number
+                )
+                
         super().save(*args, **kwargs)
         
 # ----------------------------
