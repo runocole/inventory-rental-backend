@@ -363,7 +363,7 @@ class Sale(models.Model):
     phone = models.CharField(max_length=20)
     state = models.CharField(max_length=100)
     total_cost = models.DecimalField(max_digits=10, decimal_places=2)
-    date_sold = models.DateField(default=date.today)
+    date_sold = models.DateTimeField(default=timezone.now)
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
