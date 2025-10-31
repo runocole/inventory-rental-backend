@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from .models import Tool, Payment, Sale, Customer, EquipmentType, Supplier, SaleItem
 from .serializers import (
     UserSerializer, ToolSerializer, EquipmentTypeSerializer,
-    PaymentSerializer, SaleSerializer, CustomerSerializer, SupplierSerializer
+    PaymentSerializer, SaleSerializer, CustomerSerializer, SupplierSerializer, CustomerOwingSerializer
 )
 from .permissions import IsAdminOrStaff, IsOwnerOrAdmin
 from rest_framework.permissions import AllowAny
@@ -18,6 +18,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes
+from datetime import timedelta
 import secrets, uuid, traceback
 
 
@@ -184,7 +185,68 @@ class CustomerListView(generics.ListAPIView):
         if user.role == "admin":
             return Customer.objects.all().order_by("-id")
         return Customer.objects.all().order_by("-id")
-
+    
+# ----------------------------
+# CUSTOMER OWING/INSTALLMENT TRACKING
+# ----------------------------
+class CustomerOwingDataView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            # Get all customers
+            customers = Customer.objects.all()
+            
+            # Calculate summary statistics
+            total_selling_price = sum(customer.total_selling_price for customer in customers)
+            total_amount_received = sum(customer.amount_paid for customer in customers)
+            total_amount_left = sum(customer.amount_left for customer in customers)
+            
+            # Calculate upcoming receivables (next 7 days)
+            from datetime import timedelta
+            today = timezone.now().date()
+            next_week = today + timedelta(days=7)
+            
+            upcoming_receivables = sum(
+                customer.amount_left for customer in customers 
+                if customer.date_next_installment and 
+                customer.date_next_installment <= next_week and
+                customer.status != 'fully-paid'
+            )
+            
+            # Count overdue customers
+            overdue_customers_count = customers.filter(
+                status='overdue'
+            ).count()
+            
+            # Prepare summary data
+            summary = {
+                "totalSellingPrice": float(total_selling_price),
+                "totalAmountReceived": float(total_amount_received),
+                "totalAmountLeft": float(total_amount_left),
+                "upcomingReceivables": float(upcoming_receivables),
+                "overdueCustomers": overdue_customers_count,
+                "totalCustomers": customers.count()
+            }
+            
+            # Serialize customer data
+            customers_data = CustomerOwingSerializer(customers, many=True).data
+            
+            response_data = {
+                "summary": summary,
+                "customers": customers_data
+            }
+            
+            return Response(response_data)
+            
+        except Exception as e:
+            print(f"Error in CustomerOwingDataView: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"error": "Failed to fetch customer owing data"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 # ----------------------------
 # TOOLS
 # ----------------------------
@@ -531,7 +593,6 @@ def send_sale_email(request):
         return Response({"message": "Email sent successfully!"})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-
 # ----------------------------
 # DASHBOARD SUMMARY
 # ----------------------------
@@ -542,8 +603,8 @@ class DashboardSummaryView(APIView):
         user = request.user
 
         total_sales = Sale.objects.count()
-        total_revenue = Sale.objects.aggregate(total=Sum("total_cost"))["total"] or 0  # Changed from cost_sold to total_cost
-        tools_count = Tool.objects.count()
+        total_revenue = Sale.objects.aggregate(total=Sum("total_cost"))["total"] or 0
+        tools_count = Tool.objects.filter(stock__gt=0).count()
         staff_count = User.objects.filter(role="staff").count()
         active_customers = Customer.objects.filter(is_activated=True).count()
 
@@ -551,52 +612,49 @@ class DashboardSummaryView(APIView):
         month_start = today.replace(day=1)
         mtd_revenue = (
             Sale.objects.filter(date_sold__gte=month_start)
-            .aggregate(total=Sum("total_cost"))  # Changed from cost_sold to total_cost
+            .aggregate(total=Sum("total_cost"))
             .get("total")
             or 0
         )
 
-        # FIXED: Show receiver tools by their actual names
         inventory_breakdown = []
-        
-        # Get all tools that are receivers and group by their names
         receiver_tools_breakdown = (
             Tool.objects
-            .filter(category="Receiver")  # Only tools with Receiver category
-            .values("name")  # Group by the tool name (T20, T30, etc.)
+            .filter(category="Receiver", stock__gt=0)  
+            .values("name")
             .annotate(count=Count("id"))
             .order_by("name")
         )
         
         for item in receiver_tools_breakdown:
             inventory_breakdown.append({
-                "receiver_type": item["name"],  # This will be "T20", "T30", etc.
+                "receiver_type": item["name"],
                 "count": item["count"]
             })
 
-        # If no receiver tools found
         if not inventory_breakdown:
             inventory_breakdown.append({
                 "receiver_type": "No receiver tools",
                 "count": 0
             })
 
+        # ✅ FIXED: Low stock should only show items that actually have stock
         low_stock_items = list(
-            Tool.objects.filter(stock__lte=5).values("id", "name", "code", "category", "stock")[:5]
+            Tool.objects.filter(stock__lte=5, stock__gt=0)  # Only items with stock
+            .values("id", "name", "code", "category", "stock")[:5]
         )
 
-        # FIXED: Top selling tools - now through SaleItem
+        # Top selling tools
         top_selling_tools = (
             SaleItem.objects.values("tool__name")
             .annotate(total_sold=Count("id"))
             .order_by("-total_sold")[:5]
         )
 
-        # FIXED: Get recent sales with items
+        # Recent sales
         recent_sales = Sale.objects.prefetch_related('items').order_by('-date_sold')[:10]
         recent_sales_data = []
         for sale in recent_sales:
-            # Get the first item's equipment name for display
             first_item = sale.items.first()
             tool_name = first_item.equipment if first_item else "No equipment"
             
@@ -604,9 +662,32 @@ class DashboardSummaryView(APIView):
                 'invoice_number': sale.invoice_number,
                 'customer_name': sale.name,
                 'tool_name': tool_name,
-                'cost_sold': sale.total_cost,  # Changed from cost_sold to total_cost
+                'cost_sold': sale.total_cost,
                 'payment_status': sale.payment_status,
                 'date_sold': sale.date_sold,
+            })
+
+        # Expiring receivers - only show items with stock
+        thirty_days_from_now = timezone.now().date() + timedelta(days=30)
+        expiring_receivers = (
+            Tool.objects
+            .filter(
+                category="Receiver",
+                expiry_date__isnull=False,
+                expiry_date__gt=timezone.now().date(),
+                expiry_date__lte=thirty_days_from_now,
+                stock__gt=0  # Only show items that are in stock
+            )
+            .values("name", "code", "expiry_date")
+            .order_by("expiry_date")[:10]
+        )
+        
+        expiring_receivers_data = []
+        for receiver in expiring_receivers:
+            expiring_receivers_data.append({
+                "name": receiver["name"],
+                "serialNumber": receiver["code"],
+                "expirationDate": receiver["expiry_date"].isoformat() if receiver["expiry_date"] else None
             })
 
         return Response(
@@ -619,6 +700,7 @@ class DashboardSummaryView(APIView):
                 "lowStockItems": low_stock_items,
                 "topSellingTools": list(top_selling_tools),
                 "recentSales": recent_sales_data,
+                "expiringReceivers": expiring_receivers_data,
             }
         )
 

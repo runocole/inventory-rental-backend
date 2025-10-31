@@ -60,6 +60,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 #  CUSTOMERS
 # ----------------------------
 class Customer(models.Model):
+    STATUS_CHOICES = [
+        ('on-track', 'On Track'),
+        ('due-soon', 'Due Soon'),
+        ('overdue', 'Overdue'),
+        ('fully-paid', 'Fully Paid')
+    ]
+    
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -72,9 +79,125 @@ class Customer(models.Model):
     email = models.EmailField(blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
     is_activated = models.BooleanField(default=False)
+    
+    # Installment tracking fields
+    total_selling_price = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        default=0,
+        verbose_name="Total Selling Price"
+    )
+    amount_paid = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        default=0,
+        verbose_name="Amount Paid"
+    )
+    amount_left = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        default=0,
+        verbose_name="Amount Left"
+    )
+    date_last_paid = models.DateField(
+        null=True, 
+        blank=True,
+        verbose_name="Date Last Paid"
+    )
+    date_next_installment = models.DateField(
+        null=True, 
+        blank=True,
+        verbose_name="Next Installment Date"
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='on-track',
+        verbose_name="Payment Status"
+    )
+    progress = models.IntegerField(
+        default=0,
+        verbose_name="Payment Progress (%)",
+        help_text="Percentage of total amount paid"
+    )
 
     def __str__(self):
         return self.name or "Unnamed Customer"
+
+    def save(self, *args, **kwargs):
+        # Auto-calculate amount_left and progress before saving
+        if self.total_selling_price > 0:
+            self.amount_left = self.total_selling_price - self.amount_paid
+            self.progress = int((self.amount_paid / self.total_selling_price) * 100)
+            
+            # Auto-update status based on amounts and dates
+            self.update_status()
+        else:
+            self.amount_left = 0
+            self.progress = 0
+            
+        super().save(*args, **kwargs)
+
+    def update_status(self):
+        """Update customer status based on payment progress and dates"""
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        if self.amount_left <= 0:
+            self.status = 'fully-paid'
+            return
+        
+        today = timezone.now().date()
+        
+        if not self.date_next_installment:
+            self.status = 'on-track'
+            return
+            
+        # Check if overdue (past due date)
+        if self.date_next_installment < today:
+            self.status = 'overdue'
+        # Check if due soon (within next 7 days)
+        elif self.date_next_installment <= today + timedelta(days=7):
+            self.status = 'due-soon'
+        else:
+            self.status = 'on-track'
+
+    def make_payment(self, amount, payment_date=None):
+        """Helper method to record a payment"""
+        from django.utils import timezone
+        
+        self.amount_paid += amount
+        
+        if payment_date:
+            self.date_last_paid = payment_date
+        else:
+            self.date_last_paid = timezone.now().date()
+            
+        self.save()
+
+    def set_next_installment_date(self, date):
+        """Set the next installment date"""
+        self.date_next_installment = date
+        self.save()
+
+    @property
+    def is_overdue(self):
+        """Check if customer is overdue on payments"""
+        from django.utils import timezone
+        if self.date_next_installment:
+            return self.date_next_installment < timezone.now().date()
+        return False
+
+    @property
+    def is_due_soon(self):
+        """Check if payment is due within 7 days"""
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        if self.date_next_installment:
+            next_week = timezone.now().date() + timedelta(days=7)
+            return (timezone.now().date() < self.date_next_installment <= next_week)
+        return False
 
 
 @receiver(post_save, sender=Customer)
@@ -88,6 +211,8 @@ def create_user_for_customer(sender, instance, created, **kwargs):
         )
         instance.user = user
         instance.save()
+
+
 
 # ----------------------------
 #  TOOLS MODEL
@@ -363,7 +488,7 @@ class Sale(models.Model):
     phone = models.CharField(max_length=20)
     state = models.CharField(max_length=100)
     total_cost = models.DecimalField(max_digits=10, decimal_places=2)
-    date_sold = models.DateTimeField(default=timezone.now)
+    date_sold = models.DateField(default=timezone.now)
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)

@@ -127,6 +127,9 @@ class SaleSerializer(serializers.ModelSerializer):
             "payment_status",
         ]
         read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number", "payment_status"]
+    
+    def get_date_sold(self, obj):
+        return obj.date_sold.strftime('%Y-%m-%d') if obj.date_sold else None
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
@@ -164,6 +167,32 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = ["id", "name", "phone", "email", "state", "is_activated"]
 
+class CustomerOwingSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source='user.id', read_only=True) if not serializers.CharField else serializers.CharField(read_only=True)
+    
+    class Meta:
+        model = Customer
+        fields = [
+            'id', 'name', 'email', 'phone', 'total_selling_price', 
+            'amount_paid', 'amount_left', 'date_last_paid', 
+            'date_next_installment', 'status', 'progress'
+        ]
+    
+    def to_representation(self, instance):
+        """Convert the data to match frontend expectations"""
+        data = super().to_representation(instance)
+        
+        # Convert field names to match frontend camelCase
+        data['totalSellingPrice'] = float(data.pop('total_selling_price'))
+        data['amountPaid'] = float(data.pop('amount_paid'))
+        data['amountLeft'] = float(data.pop('amount_left'))
+        data['dateLastPaid'] = data.pop('date_last_paid')
+        data['dateNextInstallment'] = data.pop('date_next_installment')
+        
+        # Ensure ID is string format for frontend
+        data['id'] = str(instance.id)
+        
+        return data
 
 class PaymentSerializer(serializers.ModelSerializer):
     sale = serializers.PrimaryKeyRelatedField(

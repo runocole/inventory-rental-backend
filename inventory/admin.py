@@ -9,8 +9,8 @@ class ToolAdmin(admin.ModelAdmin):
 
 class EquipmentTypeAdmin(admin.ModelAdmin):
     list_display = ['name', 'default_cost', 'category', 'invoice_number', 'created_at']  # Added invoice_number
-    search_fields = ['name', 'invoice_number']  # Added invoice_number to search
-    list_filter = ['category', 'invoice_number']  # Added invoice_number to filters
+    search_fields = ['name', 'invoice_number']    
+    list_filter = ['category', 'invoice_number']    
 
 
 admin.site.register(User)

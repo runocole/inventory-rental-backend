@@ -6,7 +6,7 @@ from .views import (
     PaymentListCreateView, PaymentDetailView,
     DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, 
     SupplierListView, SupplierDetailView, equipment_by_invoice,
-    ToolGetRandomSerialView, ToolSoldSerialsView,  ToolGroupedListView, ToolAssignRandomFromGroupView,
+    ToolGetRandomSerialView, ToolSoldSerialsView,  ToolGroupedListView, ToolAssignRandomFromGroupView, CustomerOwingDataView
 )
 urlpatterns = [
     # --- Auth ---
@@ -17,7 +17,7 @@ urlpatterns = [
     # --- Customers ---
     path("customers/add", AddCustomerView.as_view(), name="add-customer"),
     path("customers/", CustomerListView.as_view(), name="customers"),
-
+     path('customer-owing/', CustomerOwingDataView.as_view(), name='customer-owing-data'),
     # --- Tools ---
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
