@@ -89,10 +89,46 @@ class SaleItemSerializer(serializers.ModelSerializer):
         queryset=Tool.objects.all(), source="tool", write_only=True
     )
     
+    # NEW: Add computed fields for frontend
+    serial_set = serializers.SerializerMethodField()
+    datalogger_serial = serializers.SerializerMethodField()
+    import_invoice = serializers.SerializerMethodField()
+    assigned_tool_id = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = SaleItem
-        fields = ['id', 'tool_id', 'equipment', 'cost', 'category', 'serial_number']  # NEW: Added serial_number
+        fields = [
+            'id', 'tool_id', 'equipment', 'cost', 'category', 
+            'serial_number', 'serial_set', 'datalogger_serial', 
+            'import_invoice', 'assigned_tool_id'
+        ]
         read_only_fields = ['id']
+
+    def get_serial_set(self, obj):
+        """Convert serial_number to serial_set array for frontend"""
+        if obj.serial_number:
+            # If it's a JSON string, parse it, otherwise treat as single serial
+            try:
+                serials = json.loads(obj.serial_number)
+                if isinstance(serials, list):
+                    return serials
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Return as single item array
+            return [obj.serial_number]
+        return []
+
+    def get_datalogger_serial(self, obj):
+        """Extract datalogger serial from tool if available"""
+        if obj.tool and hasattr(obj.tool, 'datalogger_serial'):
+            return obj.tool.datalogger_serial
+        return None
+
+    def get_import_invoice(self, obj):
+        """Get import invoice from sale"""
+        if obj.sale and obj.sale.import_invoice:
+            return obj.sale.import_invoice
+        return None
 
     def create(self, validated_data):
         # Get a random serial number if not provided
@@ -108,6 +144,7 @@ class SaleItemSerializer(serializers.ModelSerializer):
 class SaleSerializer(serializers.ModelSerializer):
     items = SaleItemSerializer(many=True)
     sold_by = serializers.CharField(source="staff.email", read_only=True)
+    date_sold = serializers.DateField(format='%Y-%m-%d')
 
     class Meta:
         model = Sale
@@ -122,25 +159,46 @@ class SaleSerializer(serializers.ModelSerializer):
             "total_cost",
             "date_sold",
             "invoice_number",
+            "import_invoice",  # NEW: Add import_invoice
             "payment_plan",
             "expiry_date",
             "payment_status",
         ]
         read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number", "payment_status"]
-    
-    def get_date_sold(self, obj):
-        return obj.date_sold.strftime('%Y-%m-%d') if obj.date_sold else None
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
         user = self.context["request"].user
         validated_data["staff"] = user
         
+        # Extract import_invoice from first item if available
+        if items_data and len(items_data) > 0:
+            first_item = items_data[0]
+            if 'import_invoice' in first_item:
+                validated_data['import_invoice'] = first_item.pop('import_invoice')
+        
         # Create the sale
         sale = Sale.objects.create(**validated_data)
         
         # Create sale items
         for item_data in items_data:
+            # Extract frontend-specific fields
+            serial_set = item_data.pop('serial_set', None)
+            datalogger_serial = item_data.pop('datalogger_serial', None)
+            assigned_tool_id = item_data.pop('assigned_tool_id', None)
+            import_invoice = item_data.pop('import_invoice', None)
+            
+            # Handle serial_set - convert to serial_number
+            if serial_set and isinstance(serial_set, list):
+                if len(serial_set) == 1:
+                    item_data['serial_number'] = serial_set[0]
+                else:
+                    item_data['serial_number'] = json.dumps(serial_set)
+            
+            # Store assigned_tool_id
+            if assigned_tool_id:
+                item_data['assigned_tool_id'] = assigned_tool_id
+            
             SaleItem.objects.create(sale=sale, **item_data)
             
         return sale

@@ -490,6 +490,7 @@ class Sale(models.Model):
     total_cost = models.DecimalField(max_digits=10, decimal_places=2)
     date_sold = models.DateField(default=timezone.now)
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
+    import_invoice = models.CharField(max_length=100, blank=True, null=True)  # NEW: Add import_invoice field
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     payment_status = models.CharField(
@@ -513,7 +514,8 @@ class SaleItem(models.Model):
     equipment = models.CharField(max_length=255)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     category = models.CharField(max_length=100, blank=True, null=True)
-    serial_number = models.CharField(max_length=100, blank=True, null=True)  # NEW: Track which serial was sold
+    serial_number = models.CharField(max_length=100, blank=True, null=True)
+    assigned_tool_id = models.CharField(max_length=100, blank=True, null=True)  # NEW: Add assigned_tool_id
 
     def __str__(self):
         return f"{self.equipment} - ₦{self.cost}"
@@ -533,7 +535,6 @@ class SaleItem(models.Model):
                 )
                 
         super().save(*args, **kwargs)
-        
 # ----------------------------
 #  PAYMENTS
 # ----------------------------

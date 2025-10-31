@@ -201,9 +201,6 @@ class CustomerOwingDataView(APIView):
             total_selling_price = sum(customer.total_selling_price for customer in customers)
             total_amount_received = sum(customer.amount_paid for customer in customers)
             total_amount_left = sum(customer.amount_left for customer in customers)
-            
-            # Calculate upcoming receivables (next 7 days)
-            from datetime import timedelta
             today = timezone.now().date()
             next_week = today + timedelta(days=7)
             
