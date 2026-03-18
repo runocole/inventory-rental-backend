@@ -150,50 +150,30 @@ class SaleItemSerializer(serializers.ModelSerializer):
 class SaleSerializer(serializers.ModelSerializer):
     items = SaleItemSerializer(many=True)
     sold_by = serializers.CharField(source="staff.email", read_only=True)
+    staff_name = serializers.CharField(source="staff.name", read_only=True)
     date_sold = serializers.DateField(format='%Y-%m-%d')
     import_invoice = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = Sale
         fields = [
-            "id",
-            "staff",
-            "sold_by",
-            "name",
-            "phone",
-            "state",
-            "items",
-            "total_cost",
-            "date_sold",
-            "invoice_number",
-            "payment_plan",
-            'initial_deposit',
-            'payment_months',
-            "expiry_date",
-            "payment_status",
-            "import_invoice",
+            "id", "staff", "staff_name", "sold_by", "name", "phone", 
+            "state", "items", "total_cost", "tax_amount", "date_sold", 
+            "invoice_number", "payment_plan", 'initial_deposit', 
+            'payment_months', "expiry_date", "payment_status", "import_invoice",
         ]
-        read_only_fields = ["staff", "sold_by", "date_sold", "invoice_number"]
+        read_only_fields = ["staff_name", "sold_by", "date_sold", "invoice_number"]
 
     def validate(self, data):
-        """
-        Custom validation for payment plan fields
-        """
         payment_plan = data.get('payment_plan')
         initial_deposit = data.get('initial_deposit')
         payment_months = data.get('payment_months')
         
-        # If payment plan is "Yes", require installment fields
         if payment_plan == "Yes":
             if not initial_deposit:
-                raise serializers.ValidationError({
-                    "initial_deposit": "Initial deposit is required for installment plan."
-                })
+                raise serializers.ValidationError({"initial_deposit": "Required for installments."})
             if not payment_months:
-                raise serializers.ValidationError({
-                    "payment_months": "Payment months are required for installment plan."
-                })
-        # If payment plan is "No", clear installment fields
+                raise serializers.ValidationError({"payment_months": "Required for installments."})
         elif payment_plan == "No":
             data['initial_deposit'] = None
             data['payment_months'] = None
@@ -201,66 +181,40 @@ class SaleSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
+        # 1. Pull out the items (Django needs this gone to save the Sale)
         items_data = validated_data.pop('items')
-        user = self.context["request"].user
-        validated_data["staff"] = user
         
-        # Extract import_invoice from request data if available
+        # 2. THE FIX: Look at the raw request data for the staff ID
+        # We check the RAW data because 'validated_data' might have 
+        # already been overwritten by the 'CurrentUserDefault'
         request = self.context.get('request')
-        if request and hasattr(request, 'data'):
-            import_invoice = request.data.get('import_invoice')
-            if import_invoice:
-                validated_data['import_invoice'] = import_invoice
-        
-        # Create the sale
+        staff_id = request.data.get('staff') if request else None
+
+        # 3. If a staff ID was sent from the dropdown, use it. 
+        # Otherwise, use the logged-in user.
+        if staff_id:
+            validated_data['staff_id'] = staff_id
+        else:
+            validated_data['staff'] = request.user
+
+        # 4. Save the Sale (This creates the header: Invoice #, Date, Customer, etc.)
         sale = Sale.objects.create(**validated_data)
         
-        # Create sale items
+        # 5. Save the Items (This fixes the "No Items Found" / Missing Rows)
         for item_data in items_data:
-            # 1. Pop the fields out so Django doesn't crash
-            serial_set = item_data.pop('serial_set', None)
-            datalogger_serial = item_data.pop('datalogger_serial', None)
-            assigned_tool_id = item_data.pop('assigned_tool_id', None)
-            invoice_number = item_data.pop('invoice_number', None)
-            import_invoice = item_data.pop('import_invoice', None)
-            
-            # 2. Format the array of receivers safely
-            if serial_set and isinstance(serial_set, list):
-                if len(serial_set) == 1:
-                    item_data['serial_number'] = serial_set[0]
-                else:
-                    item_data['serial_number'] = json.dumps(serial_set)
-            
-            # 3. PUT THE POPPED FIELDS BACK IN BEFORE SAVING
-            if assigned_tool_id:
-                item_data['assigned_tool_id'] = assigned_tool_id
-            
-            if import_invoice:
-                item_data['import_invoice'] = import_invoice
-                
-            # THIS PERMANENTLY SAVES THE DATALOGGER TO THE DATABASE
-            if datalogger_serial:
-                item_data['datalogger_serial'] = datalogger_serial
-                
-            if invoice_number:
-                item_data['invoice_number'] = invoice_number
-            
-            # 4. Save to database (Make sure this line only exists ONE TIME!)
+            # We don't manually pop everything here; we let SaleItem handle its own fields
+            # We just need to ensure the item is linked to the sale we just made
             SaleItem.objects.create(sale=sale, **item_data)
             
         return sale
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
-        
-        # Update sale fields including import_invoice
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
         
-        # Update items if provided
         if items_data is not None:
-            # Delete existing items and create new ones
             instance.items.all().delete()
             for item_data in items_data:
                 SaleItem.objects.create(sale=instance, **item_data)

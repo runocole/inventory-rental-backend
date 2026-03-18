@@ -7,6 +7,7 @@ from .serializers import (
     PaymentSerializer, SaleSerializer, CustomerSerializer, SupplierSerializer, CustomerOwingSerializer,
     CodeBatchSerializer, ActivationCodeSerializer, CodeAssignmentLogSerializer
 )
+from rest_framework.pagination import PageNumberPagination
 from .permissions import IsAdminOrStaff, IsOwnerOrAdmin
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -14,7 +15,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-from django.db.models import Sum, Count, Max, Q
+from django.db.models import Sum, Count, Max, Q, Case, When, F, FloatField
 from django.core.mail import send_mail, BadHeaderError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
@@ -32,12 +33,17 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 import base64
 import random
+from django.db.models.functions import Coalesce
 from io import BytesIO
 
 
 
 User = get_user_model()
 
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 # ----------------------------
 # STAFF MANAGEMENT
@@ -93,7 +99,7 @@ class AddStaffView(generics.CreateAPIView):
 
 class StaffListView(generics.ListAPIView):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrStaff]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return User.objects.filter(role="staff")
@@ -789,17 +795,23 @@ class SupplierDetailView(generics.RetrieveUpdateDestroyAPIView):
 class SaleListCreateView(generics.ListCreateAPIView):
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardResultsSetPagination  # ── NEW: Server-Side Pagination
 
     def get_queryset(self):
         user = self.request.user
         
-        # 1. Staff see their own sales
-        if user.role == "staff":
-            return Sale.objects.filter(staff=user).order_by("-date_sold")
+        # ── NEW: N+1 Optimization ──
+        # select_related & prefetch_related stops Django from making 100+ database queries!
+        queryset = Sale.objects.select_related('staff').prefetch_related('items').order_by("-date_sold", "-id")
+        
+        # 1. Admins & Staff (Managers) see everything
+        # This checks the 'Is Staff' and 'Superuser' boxes from your Django Admin screenshot
+        if user.is_superuser or user.is_staff or getattr(user, 'role', '') == "admin":
+            pass # No filter applied, Berry Lyon can now see Naomi's sales
             
-        # 2. Admins see everything
-        elif getattr(user, 'role', '') == "admin" or user.is_superuser:
-            return Sale.objects.all().order_by("-date_sold")
+        # 2. Regular users with no special status only see their own
+        elif getattr(user, 'role', '') == "staff":
+            queryset = queryset.filter(staff=user)
             
         # 3. 🎯 CUSTOMERS see sales matching their name or phone!
         elif user.role == "customer":
@@ -817,42 +829,82 @@ class SaleListCreateView(generics.ListCreateAPIView):
                     query |= Q(phone=user.customer.phone)
             
             if query:
-                return Sale.objects.filter(query).order_by("-date_sold")
+                queryset = queryset.filter(query)
+            else:
+                return Sale.objects.none()
                 
         # 4. Fallback for any unknown user type
-        return Sale.objects.none()
+        else:
+            return Sale.objects.none()
+
+        # ── NEW: URL Parameter Filtering (Driven by React) ──
+        search_query = self.request.query_params.get('search', '').strip()
+        status_filter = self.request.query_params.get('status', 'all').lower()
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        phone_filter = self.request.query_params.get('phone')
+
+        staff_filter = self.request.query_params.get('staff_id')
+        if staff_filter:
+            queryset = queryset.filter(staff_id=staff_filter)
+
+        if search_query:
+            queryset = queryset.filter(
+                Q(name__icontains=search_query) |
+                Q(phone__icontains=search_query) |
+                Q(invoice_number__icontains=search_query) |
+                Q(items__equipment__icontains=search_query)
+            ).distinct()
+
+        if status_filter and status_filter != 'all':
+            queryset = queryset.filter(
+                Q(status__iexact=status_filter) | 
+                Q(payment_status__iexact=status_filter)
+            )
+
+        if start_date:
+            queryset = queryset.filter(date_sold__gte=start_date)
+            
+        if end_date:
+            queryset = queryset.filter(date_sold__lte=end_date)
+            
+        if phone_filter:
+            queryset = queryset.filter(phone=phone_filter)
+
+        return queryset
 
     def perform_create(self, serializer):
-        # Get import_invoice from request data
+        # 1. Force the staff ID from the request
+        staff_id = self.request.data.get('staff')
         import_invoice = self.request.data.get('import_invoice')
-        
-        # Save the sale with staff and import_invoice
-        sale = serializer.save(
-            staff=self.request.user,
-            import_invoice=import_invoice
-        )
-        
-        # FIXED: Also update sale items with serial_set data
-        if sale.items.exists():
-            items_data = self.request.data.get('items', [])
-            for i, item in enumerate(sale.items.all()):
-                if i < len(items_data):
-                    item_data = items_data[i]
-                    # Save serial_set to the item
-                    serial_set = item_data.get('serial_set')
-                    if serial_set:
-                        # Convert serial_set array to serial_number field
-                        if isinstance(serial_set, list) and len(serial_set) > 0:
-                            if len(serial_set) == 1:
-                                item.serial_number = serial_set[0]
-                            else:
-                                item.serial_number = json.dumps(serial_set)
-                        item.save()
-        
-        # Also update sale items with import_invoice if provided
-        if import_invoice and sale.items.exists():
-            sale.items.all().update(import_invoice=import_invoice)
 
+        # 2. Save the sale with the correct staff
+        if staff_id and str(staff_id).isdigit():
+            sale = serializer.save(staff_id=int(staff_id), import_invoice=import_invoice)
+        else:
+            sale = serializer.save(staff=self.request.user, import_invoice=import_invoice)
+
+        # 3. Handle the Items and Serial Numbers manually to be 100% sure
+        items_raw_data = self.request.data.get('items', [])
+        
+        # We refresh from DB to make sure we see the items created by the serializer
+        sale.refresh_from_db() 
+        
+        for i, item in enumerate(sale.items.all()):
+            if i < len(items_raw_data):
+                data = items_raw_data[i]
+                serial_set = data.get('serial_set')
+                
+                # Update serial number if provided
+                if serial_set:
+                    if isinstance(serial_set, list) and len(serial_set) > 0:
+                        item.serial_number = serial_set[0] if len(serial_set) == 1 else json.dumps(serial_set)
+                    
+                # Ensure the item also carries the import_invoice
+                if import_invoice:
+                    item.import_invoice = import_invoice
+                
+                item.save()
 
 class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SaleSerializer
@@ -1028,6 +1080,35 @@ class PaymentListCreateView(generics.ListCreateAPIView):
     serializer_class = PaymentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    # ── THE FIX: Auto-update the Sale when a Payment is logged ──
+    def perform_create(self, serializer):
+        # 1. Save the new payment log to the database
+        payment = serializer.save()
+
+        # 2. If this payment is attached to a Sale, update the Sale's balance
+        if payment.sale:
+            sale = payment.sale
+            
+            # Safely get the numbers (convert to float to avoid calculation errors)
+            current_paid = float(sale.initial_deposit or 0.0)
+            new_amount = float(payment.amount or 0.0)
+            total_cost = float(sale.total_cost or 0.0)
+            
+            # Add the newly paid amount to the total paid so far
+            new_total_paid = current_paid + new_amount
+            
+            # Update the Sale model 
+            # (We save it as a string just in case your model uses CharField for money)
+            sale.initial_deposit = str(new_total_paid) 
+            
+            # 3. Automatically update the status based on the new balance
+            if new_total_paid >= total_cost:
+                sale.payment_status = 'completed'
+            else:
+                sale.payment_status = 'ongoing'
+                
+            # Save all these changes to the Sale!
+            sale.save()
 
 class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Payment.objects.all()
@@ -1039,37 +1120,72 @@ class PaymentSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # ── Summary Cards ────────────────────────────────────────────────────
+        # 1. Grab all the query parameters sent by React
+        search_query = request.query_params.get('search', '').strip()
+        status_filter = request.query_params.get('status', 'all').lower()
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        # ── Summary Cards (Always calculates total database amounts) ──
         all_sales = Sale.objects.all()
 
-        total_revenue = all_sales.filter(
-            payment_status="completed"
-        ).aggregate(total=Sum("total_cost"))["total"] or 0
+        safe_cost = Coalesce(F('total_cost'), 0.0, output_field=FloatField())
+        safe_deposit = Coalesce(F('initial_deposit'), 0.0, output_field=FloatField())
 
-        pending_sales = all_sales.filter(
-            payment_status__in=["pending", "installment"]
+        aggregations = all_sales.aggregate(
+            money_received=Sum(
+                Case(
+                    When(payment_status__iexact='completed', then=safe_cost),
+                    When(payment_status__iexact='ongoing', then=safe_deposit),
+                    default=0.0,
+                    output_field=FloatField()
+                )
+            ),
+            receivables=Sum(
+                Case(
+                    When(payment_status__iexact='ongoing', then=safe_cost - safe_deposit),
+                    default=0.0,
+                    output_field=FloatField()
+                )
+            )
         )
-        pending_amount = pending_sales.aggregate(
-            total=Sum("total_cost")
-        )["total"] or 0
-        pending_count = pending_sales.count()
 
+        money_received = aggregations["money_received"] or 0
+        receivables = aggregations["receivables"] or 0
+        total_revenue = money_received + receivables
+
+        pending_sales = all_sales.filter(payment_status__in=["pending", "installment"])
+        pending_amount = pending_sales.aggregate(total=Sum("total_cost"))["total"] or 0
+        
         overdue_customers = Customer.objects.filter(status="overdue")
-        overdue_amount = overdue_customers.aggregate(
-            total=Sum("amount_left")
-        )["total"] or 0
-        overdue_count = overdue_customers.count()
+        overdue_amount = overdue_customers.aggregate(total=Sum("amount_left"))["total"] or 0
 
-        # ── Payment History Table (one row per Sale) ──────────────────────────
-        sales = Sale.objects.prefetch_related("items").order_by("-date_sold")
+        # ── Backend Filtering (The Speed Fix!) ──
+        sales_query = all_sales.prefetch_related("items").order_by("-date_sold", "-id")
+
+        if search_query:
+            sales_query = sales_query.filter(
+                Q(name__icontains=search_query) |
+                Q(phone__icontains=search_query) |
+                Q(invoice_number__icontains=search_query) |
+                Q(items__equipment__icontains=search_query)
+            ).distinct()
+
+        if status_filter and status_filter != 'all':
+            sales_query = sales_query.filter(payment_status__iexact=status_filter)
+
+        if start_date:
+            sales_query = sales_query.filter(date_sold__gte=start_date)
+        if end_date:
+            sales_query = sales_query.filter(date_sold__lte=end_date)
+
+        # ── Backend Pagination (Only processes 10 items instead of thousands) ──
+        paginator = StandardResultsSetPagination()
+        paginated_sales = paginator.paginate_queryset(sales_query, request, view=self)
 
         rows = []
-        for sale in sales:
-            # Get first item's equipment name for display
-            # first_item = sale.items.first()
-            # equipment = first_item.equipment if first_item else "—"
+        for sale in paginated_sales:
             items_list = list(sale.items.values("equipment", "equipment_type"))
-
             rows.append({
                 "payment_id":     sale.invoice_number,
                 "invoice_number": sale.invoice_number,
@@ -1086,13 +1202,17 @@ class PaymentSummaryView(APIView):
         return Response({
             "summary": {
                 "total_revenue":   float(total_revenue),
+                "receivables":     float(receivables),
                 "pending_amount":  float(pending_amount),
-                "pending_count":   pending_count,
+                "pending_count":   pending_sales.count(),
                 "overdue_amount":  float(overdue_amount),
-                "overdue_count":   overdue_count,
+                "overdue_count":   overdue_customers.count(),
                 "total_sales":     all_sales.count(),
             },
             "payments": rows,
+            "total_pages": paginator.page.paginator.num_pages, # Let React know how many pages exist
+            "current_page": paginator.page.number,
+            "total_items": paginator.page.paginator.count
         }, status=status.HTTP_200_OK)
 
 # ----------------------------

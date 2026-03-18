@@ -457,11 +457,12 @@ class Sale(models.Model):
     )
 
     # 🔹 Customer information (stored directly in Sale)
-    name = models.CharField(max_length=255)
-    phone = models.CharField(max_length=20)
+    name = models.CharField(max_length=255, db_index=True)
+    phone = models.CharField(max_length=20, db_index=True)
     state = models.CharField(max_length=100)
     total_cost = models.DecimalField(max_digits=10, decimal_places=2)
-    date_sold = models.DateField(default=timezone.now)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, verbose_name="Tax Amount (7.5%)")
+    date_sold = models.DateField(default=timezone.now, db_index=True)
     invoice_number = models.CharField(max_length=100, unique=True, blank=True)
     payment_plan = models.CharField(max_length=100, blank=True, null=True)
     initial_deposit = models.DecimalField(
@@ -478,7 +479,7 @@ class Sale(models.Model):
     )
     expiry_date = models.DateField(blank=True, null=True)
     payment_status = models.CharField(
-        max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending"
+        max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending", db_index=True
     )
     
     # NEW: Add import_invoice field
