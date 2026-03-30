@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import CodeAssignmentLog, Tool, EquipmentType, Payment, Sale, Customer, Supplier, SaleItem, CodeBatch, ActivationCode
 from django.utils import timezone
+from datetime import timedelta
 import json
 
 User = get_user_model()
@@ -149,10 +150,15 @@ class SaleItemSerializer(serializers.ModelSerializer):
 
 class SaleSerializer(serializers.ModelSerializer):
     items = SaleItemSerializer(many=True)
-    sold_by = serializers.CharField(source="staff.email", read_only=True)
-    staff_name = serializers.CharField(source="staff.name", read_only=True)
+    # Since staff is now a CharField, these no longer need 'source="staff.name"'
+    staff = serializers.CharField(required=False, allow_blank=True)
+    staff_name = serializers.CharField(source="staff", read_only=True)
+    sold_by = serializers.CharField(default="N/A", read_only=True)
+    
     date_sold = serializers.DateField(format='%Y-%m-%d')
     import_invoice = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_overdue = serializers.ReadOnlyField()
+    payment_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -160,60 +166,84 @@ class SaleSerializer(serializers.ModelSerializer):
             "id", "staff", "staff_name", "sold_by", "name", "phone", 
             "state", "items", "total_cost", "tax_amount", "date_sold", 
             "invoice_number", "payment_plan", 'initial_deposit', 
-            'payment_months', "expiry_date", "payment_status", "import_invoice",
+            'payment_months', "due_date", "payment_status", "import_invoice",
+            "is_overdue",
         ]
         read_only_fields = ["staff_name", "sold_by", "date_sold", "invoice_number"]
 
-    def validate(self, data):
-        payment_plan = data.get('payment_plan')
-        initial_deposit = data.get('initial_deposit')
-        payment_months = data.get('payment_months')
+    def get_payment_status(self, obj):
+        db_status = (obj.payment_status or "ongoing").lower()
         
-        if payment_plan == "Yes":
-            if not initial_deposit:
-                raise serializers.ValidationError({"initial_deposit": "Required for installments."})
-            if not payment_months:
-                raise serializers.ValidationError({"payment_months": "Required for installments."})
-        elif payment_plan == "No":
-            data['initial_deposit'] = None
-            data['payment_months'] = None
+        # 1. If it's fully paid, keep it that way
+        if db_status in ['completed', 'paid', 'fully-paid']:
+            return db_status
+
+        today = timezone.localdate()
+
+        # 2. THE ABSOLUTE RULE: If the final due date has passed, it is permanently overdue
+        if obj.due_date and today >= obj.due_date:
+            return "overdue"
+
+        # 3. THE 90-DAY (3 MONTHS) INACTIVITY RULE:
+        # Get the most recent payment logged for this sale
+        last_payment = obj.payment_set.order_by('-payment_date').first()
         
-        return data
+        if last_payment and last_payment.payment_date:
+            last_activity_date = last_payment.payment_date
+            if hasattr(last_activity_date, 'date'):
+                last_activity_date = last_activity_date.date()
+        else:
+            # If they haven't made ANY payments yet, calculate from the day it was sold
+            last_activity_date = obj.date_sold
+
+        if last_activity_date:
+            days_inactive = (today - last_activity_date).days
+            if days_inactive >= 90:  # Flips to overdue if inactive for 90 days or more
+                return "overdue"
+
+        # 4. If due_date hasn't passed AND they made a payment within 90 days:
+        return "ongoing"
 
     def create(self, validated_data):
-        # 1. Pull out the items (Django needs this gone to save the Sale)
-        items_data = validated_data.pop('items')
+        # 1. Extract nested items
+        items_data = validated_data.pop('items', [])
         
-        # 2. THE FIX: Look at the raw request data for the staff ID
-        # We check the RAW data because 'validated_data' might have 
-        # already been overwritten by the 'CurrentUserDefault'
+        # 2. Get the staff string sent from React
         request = self.context.get('request')
-        staff_id = request.data.get('staff') if request else None
+        staff_val = request.data.get('staff') if request else None
 
-        # 3. If a staff ID was sent from the dropdown, use it. 
-        # Otherwise, use the logged-in user.
-        if staff_id:
-            validated_data['staff_id'] = staff_id
+        # 3. Logic: Priority to React name, then User attributes
+        if staff_val and str(staff_val).strip() not in ["", "null", "undefined"]:
+            final_staff_name = str(staff_val)
+        elif request and request.user:
+            user = request.user
+            # ✅ SAFE CHECK: Try 'name' field first, then 'username'
+            # We AVOID .get_full_name() here to prevent the crash
+            final_staff_name = getattr(user, 'name', None) or getattr(user, 'username', 'Admin')
         else:
-            validated_data['staff'] = request.user
+            final_staff_name = "Admin"
+        
+        # Ensure it's stored as a string in the validated_data
+        validated_data['staff'] = final_staff_name
 
-        # 4. Save the Sale (This creates the header: Invoice #, Date, Customer, etc.)
+        # 4. Save the Sale
         sale = Sale.objects.create(**validated_data)
         
-        # 5. Save the Items (This fixes the "No Items Found" / Missing Rows)
+        # 5. Create the nested SaleItems
         for item_data in items_data:
-            # We don't manually pop everything here; we let SaleItem handle its own fields
-            # We just need to ensure the item is linked to the sale we just made
             SaleItem.objects.create(sale=sale, **item_data)
             
         return sale
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
+        
+        # Update Sale fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
         
+        # Update SaleItems if provided
         if items_data is not None:
             instance.items.all().delete()
             for item_data in items_data:
@@ -259,36 +289,67 @@ class PaymentSerializer(serializers.ModelSerializer):
     )
 
     items = serializers.SerializerMethodField()
+    payment_status = serializers.SerializerMethodField() # This is the key field
 
     class Meta:
         model = Payment
         fields = [
-            "id",
-            "customer",
-            "sale",
-            "items",
-            "amount",
-            "payment_method",
-            "payment_reference",
-            "payment_date",
-            "status",
+            "id", "customer", "sale", "items", "amount",
+            "payment_method", "payment_reference", "payment_date", "status", 
+            "payment_status"
         ]
         read_only_fields = ["customer", "payment_date", "status"]
 
     def get_items(self, obj):
         if obj.sale:
-            # This returns a list of dictionaries like: 
-            # [{"equipment": "T20", "equipment_type": "Receiver"}, {"equipment": "External POLE", "equipment_type": "Accessory"}]
             return list(obj.sale.items.values('equipment', 'equipment_type'))
         return []
 
+    def get_payment_status(self, obj):
+        if not obj.sale:
+            return (obj.status or "completed").lower()
+
+        sale = obj.sale
+        db_sale_status = (sale.payment_status or "ongoing").lower()
+        
+        # 1. If the sale is actually finished, show completed
+        if db_sale_status in ['completed', 'paid', 'fully-paid']:
+            return "completed"
+
+        today = timezone.localdate()
+
+        # 2. THE ABSOLUTE RULE
+        if sale.due_date and today >= sale.due_date:
+            return "overdue"
+
+        # 3. THE 90-DAY (3 MONTHS) INACTIVITY RULE
+        last_payment = sale.payment_set.order_by('-payment_date').first()
+        
+        if last_payment and last_payment.payment_date:
+            last_activity_date = last_payment.payment_date
+            if hasattr(last_activity_date, 'date'):
+                last_activity_date = last_activity_date.date()
+        else:
+            last_activity_date = sale.date_sold
+
+        if last_activity_date:
+            days_inactive = (today - last_activity_date).days
+            if days_inactive >= 90:  # Flips to overdue if inactive for 90 days or more
+                return "overdue"
+
+        # 4. Everything is good
+        return "ongoing"
+
     def create(self, validated_data):
+        # Keep your existing create logic
         user = self.context["request"].user
         validated_data["customer"] = user
         payment = super().create(validated_data)
         payment.status = "completed"
         payment.save()
 
+        # Optional: If this payment clears the debt, you'd mark the sale completed here
+        # For now, I am leaving your existing logic:
         if payment.sale:
             sale = payment.sale
             sale.payment_status = "completed"

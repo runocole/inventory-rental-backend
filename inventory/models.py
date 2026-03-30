@@ -444,17 +444,20 @@ class Sale(models.Model):
         ("completed", "Completed"),
         ("installment", "Installment"),
         ("failed", "Failed"),
+        ("overdue", "Overdue"),
     )
 
     # 🔹 Who made the sale (staff)
-    staff = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        related_name="sales_made",
-        limit_choices_to={"role": "staff"},
-        null=True,
-        blank=True,
-    )
+    # staff = models.ForeignKey(
+    #     User,
+    #     on_delete=models.SET_NULL,
+    #     related_name="sales_made",
+    #     limit_choices_to={"role": "staff"},
+    #     null=True,
+    #     blank=True,
+    # )
+
+    staff = models.CharField(max_length=100, null=True, blank=True)
 
     # 🔹 Customer information (stored directly in Sale)
     name = models.CharField(max_length=255, db_index=True)
@@ -477,7 +480,8 @@ class Sale(models.Model):
         null=True,
         verbose_name="Number of Payment Months"
     )
-    expiry_date = models.DateField(blank=True, null=True)
+    due_date = models.DateField(blank=True, null=True, verbose_name="Final Due Date")
+    # expiry_date = models.DateField(blank=True, null=True)
     payment_status = models.CharField(
         max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending", db_index=True
     )
@@ -504,6 +508,40 @@ class Sale(models.Model):
             self.payment_months = None
             
         super().save(*args, **kwargs)
+
+    @property
+    def is_overdue(self):
+        """Single source of truth for the 90-day inactivity and absolute due date rules."""
+        from django.utils import timezone
+        
+        db_status = (self.payment_status or "ongoing").lower()
+        
+        # 1. If it's fully paid, it is not overdue
+        if db_status in ['completed', 'paid', 'fully-paid']:
+            return False
+
+        today = timezone.localdate()
+
+        # 2. THE ABSOLUTE RULE
+        if self.due_date and today >= self.due_date:
+            return True
+
+        # 3. THE 90-DAY INACTIVITY RULE
+        last_payment = self.payment_set.order_by('-payment_date').first()
+        
+        if last_payment and last_payment.payment_date:
+            last_activity_date = last_payment.payment_date
+            if hasattr(last_activity_date, 'date'):
+                last_activity_date = last_activity_date.date()
+        else:
+            last_activity_date = self.date_sold
+
+        if last_activity_date:
+            days_inactive = (today - last_activity_date).days
+            if days_inactive >= 90:
+                return True
+
+        return False
 
 class SaleItem(models.Model):
     """Individual items within a sale"""
@@ -557,6 +595,24 @@ class SaleItem(models.Model):
                 
         super().save(*args, **kwargs)
 
+    # def get_actual_status(self):
+    #     """Returns 'overdue' if the date has passed, otherwise returns the stored status."""
+    #     if self.payment_status in ['completed', 'fully-paid']:
+    #         return self.payment_status
+            
+    #     if self.due_date and self.due_date < timezone.now().date():
+    #         return "overdue"
+            
+    #     return self.payment_status
+
+    @property
+    def is_overdue(self):
+        """Delegates the overdue check to the parent Sale to ensure 100% synced logic."""
+        if not self.sale:
+            return False
+        return self.sale.is_overdue
+    
+    
 # ----------------------------
 #  PAYMENTS
 # ----------------------------
@@ -651,6 +707,7 @@ class ActivationCode(models.Model):
     assigned_date = models.DateTimeField(null=True, blank=True)
     activated_date = models.DateTimeField(null=True, blank=True)
     expiry_date = models.DateTimeField(null=True, blank=True)  # Can still set this manually
+    
     
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)

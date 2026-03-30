@@ -795,58 +795,66 @@ class SupplierDetailView(generics.RetrieveUpdateDestroyAPIView):
 class SaleListCreateView(generics.ListCreateAPIView):
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
-    pagination_class = StandardResultsSetPagination  # ── NEW: Server-Side Pagination
+    pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
         user = self.request.user
+        today = timezone.localdate()
         
-        # ── NEW: N+1 Optimization ──
-        # select_related & prefetch_related stops Django from making 100+ database queries!
-        queryset = Sale.objects.select_related('staff').prefetch_related('items').order_by("-date_sold", "-id")
+        # ✅ CHANGED: Now exactly 90 days (3 months)
+        ninety_days_ago = today - timedelta(days=90)
         
-        # 1. Admins & Staff (Managers) see everything
-        # This checks the 'Is Staff' and 'Superuser' boxes from your Django Admin screenshot
+        # Base Queryset - Annotate with the most recent payment date to enable accurate filtering
+        queryset = Sale.objects.prefetch_related('items').annotate(
+            last_payment_date=Max('payment__payment_date')
+        ).order_by("-date_sold", "-id")
+        
+        # --- 1. Role-Based Filtering ---
         if user.is_superuser or user.is_staff or getattr(user, 'role', '') == "admin":
-            pass # No filter applied, Berry Lyon can now see Naomi's sales
-            
-        # 2. Regular users with no special status only see their own
+            pass 
         elif getattr(user, 'role', '') == "staff":
-            queryset = queryset.filter(staff=user)
-            
-        # 3. 🎯 CUSTOMERS see sales matching their name or phone!
-        elif user.role == "customer":
+            staff_name = user.get_full_name() or user.username
+            queryset = queryset.filter(staff=staff_name)
+        elif getattr(user, 'role', '') == "customer":
             query = Q()
-            if user.name:
-                query |= Q(name__iexact=user.name)
-            if user.phone:
-                query |= Q(phone=user.phone)
-                
-            # Check Customer profile as fallback
+            if user.name: query |= Q(name__iexact=user.name)
+            if user.phone: query |= Q(phone=user.phone)
             if hasattr(user, 'customer') and user.customer:
-                if user.customer.name:
-                    query |= Q(name__iexact=user.customer.name)
-                if user.customer.phone:
-                    query |= Q(phone=user.customer.phone)
+                if user.customer.name: query |= Q(name__iexact=user.customer.name)
+                if user.customer.phone: query |= Q(phone=user.customer.phone)
             
             if query:
                 queryset = queryset.filter(query)
             else:
                 return Sale.objects.none()
-                
-        # 4. Fallback for any unknown user type
         else:
             return Sale.objects.none()
 
-        # ── NEW: URL Parameter Filtering (Driven by React) ──
+        # --- 2. URL Parameter Filtering ---
         search_query = self.request.query_params.get('search', '').strip()
-        status_filter = self.request.query_params.get('status', 'all').lower()
-        start_date = self.request.query_params.get('start_date')
-        end_date = self.request.query_params.get('end_date')
-        phone_filter = self.request.query_params.get('phone')
+        staff_filter = self.request.query_params.get('staff_id') 
+        status_filter = self.request.query_params.get('status') 
 
-        staff_filter = self.request.query_params.get('staff_id')
         if staff_filter:
-            queryset = queryset.filter(staff_id=staff_filter)
+            queryset = queryset.filter(staff__icontains=staff_filter)
+
+        # ✅ NEW: 90-DAY LIVE STATUS FILTERING
+        if status_filter == 'overdue':
+            # A sale is dynamically overdue if:
+            # 1. It is NOT paid off
+            # AND
+            # 2. (The explicit string says 'overdue' OR due date passed OR 90 days inactive)
+            queryset = queryset.filter(
+                ~Q(payment_status__in=['completed', 'paid', 'fully-paid']) & 
+                (
+                    Q(payment_status__iexact='overdue') | 
+                    Q(due_date__lt=today) | 
+                    (Q(last_payment_date__isnull=False) & Q(last_payment_date__lt=ninety_days_ago)) |
+                    (Q(last_payment_date__isnull=True) & Q(date_sold__lt=ninety_days_ago))
+                )
+            )
+        elif status_filter:
+            queryset = queryset.filter(payment_status__iexact=status_filter)
 
         if search_query:
             queryset = queryset.filter(
@@ -856,57 +864,55 @@ class SaleListCreateView(generics.ListCreateAPIView):
                 Q(items__equipment__icontains=search_query)
             ).distinct()
 
-        if status_filter and status_filter != 'all':
-            queryset = queryset.filter(
-                Q(status__iexact=status_filter) | 
-                Q(payment_status__iexact=status_filter)
-            )
-
-        if start_date:
-            queryset = queryset.filter(date_sold__gte=start_date)
-            
-        if end_date:
-            queryset = queryset.filter(date_sold__lte=end_date)
-            
-        if phone_filter:
-            queryset = queryset.filter(phone=phone_filter)
-
         return queryset
 
     def perform_create(self, serializer):
-        # 1. Force the staff ID from the request
-        staff_id = self.request.data.get('staff')
+        # 1. Get the raw data from the request
+        staff_from_form = self.request.data.get('staff')
         import_invoice = self.request.data.get('import_invoice')
-
-        # 2. Save the sale with the correct staff
-        if staff_id and str(staff_id).isdigit():
-            sale = serializer.save(staff_id=int(staff_id), import_invoice=import_invoice)
+        
+        # --- NEW STATUS LOGIC ---
+        # 2. Get the payment plan from the form
+        payment_plan = self.request.data.get('payment_plan', 'No')
+        
+        # 3. Apply your rules: Yes = ongoing, No = completed
+        if payment_plan == 'Yes':
+            new_status = 'ongoing'
         else:
-            sale = serializer.save(staff=self.request.user, import_invoice=import_invoice)
+            new_status = 'completed'
+        # ------------------------
 
-        # 3. Handle the Items and Serial Numbers manually to be 100% sure
+        # 4. Save with both Staff AND the new Status
+        if staff_from_form and str(staff_from_form).strip() not in ["", "null", "undefined"]:
+            serializer.save(
+                staff=str(staff_from_form), 
+                import_invoice=import_invoice,
+                payment_status=new_status  # <--- Logic applied here
+            )
+        else:
+            user = self.request.user
+            fallback_name = getattr(user, 'name', None) or getattr(user, 'username', 'Admin')
+            serializer.save(
+                staff=fallback_name, 
+                import_invoice=import_invoice,
+                payment_status=new_status  # <--- Logic applied here
+            )
+
+        # 5. Handle Items (rest of your existing code...)
+        sale = serializer.instance
         items_raw_data = self.request.data.get('items', [])
-        
-        # We refresh from DB to make sure we see the items created by the serializer
-        sale.refresh_from_db() 
-        
         for i, item in enumerate(sale.items.all()):
             if i < len(items_raw_data):
                 data = items_raw_data[i]
                 serial_set = data.get('serial_set')
-                
-                # Update serial number if provided
-                if serial_set:
-                    if isinstance(serial_set, list) and len(serial_set) > 0:
-                        item.serial_number = serial_set[0] if len(serial_set) == 1 else json.dumps(serial_set)
-                    
-                # Ensure the item also carries the import_invoice
+                if serial_set and isinstance(serial_set, list):
+                    import json
+                    item.serial_number = serial_set[0] if len(serial_set) == 1 else json.dumps(serial_set)
                 if import_invoice:
                     item.import_invoice = import_invoice
-                
                 item.save()
 
-class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
+""" class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -940,7 +946,64 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance = self.get_object()
         if user.role == "staff" and instance.staff != user:
             raise PermissionDenied("You can only edit your own sales.")
+        return super().perform_update(serializer) """
+
+class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = SaleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        role = getattr(user, 'role', '')
+        
+        # ✅ FIX 1: Exact match with your List View! (Added user.is_staff)
+        if user.is_superuser or user.is_staff or role == "admin":
+            return Sale.objects.all()
+            
+        elif role == "staff":
+            staff_name = getattr(user, 'name', None) or getattr(user, 'username', '')
+            return Sale.objects.filter(staff=staff_name)
+            
+        elif role == "customer":
+            query = Q()
+            if getattr(user, 'name', None):
+                query |= Q(name__iexact=user.name)
+            if getattr(user, 'phone', None):
+                query |= Q(phone=user.phone)
+                
+            if hasattr(user, 'customer') and user.customer:
+                if user.customer.name:
+                    query |= Q(name__iexact=user.customer.name)
+                if user.customer.phone:
+                    query |= Q(phone=user.customer.phone)
+            
+            if query:
+                return Sale.objects.filter(query)
+                
+        return Sale.objects.none()
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        instance = self.get_object()
+        role = getattr(user, 'role', '')
+        
+        # ✅ FIX 2: Only block the update if they are strictly a normal staff member
+        if role == "staff" and not (user.is_superuser or user.is_staff or role == "admin"):
+            staff_name = getattr(user, 'name', None) or getattr(user, 'username', '')
+            if instance.staff != staff_name:
+                raise PermissionDenied("You can only edit your own sales.")
+                
         return super().perform_update(serializer)
+
+    def partial_update(self, request, *args, **kwargs):
+        # 1. Force the database to update the raw field directly, bypassing any model save() rules!
+        if 'payment_status' in request.data:
+            from django.db.models import F
+            # This writes straight to the database instantly
+            Sale.objects.filter(pk=self.kwargs['pk']).update(payment_status=request.data['payment_status'])
+            
+        # 2. Continue with the rest of the normal update process
+        return super().partial_update(request, *args, **kwargs)
 
 # ----------------------------
 # EMAIL API
@@ -1097,14 +1160,19 @@ class PaymentListCreateView(generics.ListCreateAPIView):
             # Add the newly paid amount to the total paid so far
             new_total_paid = current_paid + new_amount
             
-            # Update the Sale model 
-            # (We save it as a string just in case your model uses CharField for money)
-            sale.initial_deposit = str(new_total_paid) 
+            # Update the Sale model
+            sale.initial_deposit = str(new_total_paid)
             
             # 3. Automatically update the status based on the new balance
+            today = timezone.localdate()
+            
             if new_total_paid >= total_cost:
                 sale.payment_status = 'completed'
+            elif sale.due_date and today >= sale.due_date:
+                # 🚨 ABSOLUTE OVERDUE RULE: Bypass the payment log if the final due date is reached
+                sale.payment_status = 'overdue'
             else:
+                # 🔄 ONGOING RULE: Payment logged within time limit, reset to ongoing
                 sale.payment_status = 'ongoing'
                 
             # Save all these changes to the Sale!
@@ -1116,7 +1184,7 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsOwnerOrAdmin]
 
 
-class PaymentSummaryView(APIView):
+""" class PaymentSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -1213,7 +1281,140 @@ class PaymentSummaryView(APIView):
             "total_pages": paginator.page.paginator.num_pages, # Let React know how many pages exist
             "current_page": paginator.page.number,
             "total_items": paginator.page.paginator.count
+        }, status=status.HTTP_200_OK) """
+
+
+class PaymentSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        search_query = request.query_params.get('search', '').strip()
+        status_filter = request.query_params.get('status', 'all').lower()
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        today = timezone.localdate()
+        from datetime import timedelta
+        
+        # ✅ CHANGED TO 90 DAYS
+        ninety_days_ago = today - timedelta(days=90)
+
+        # ✅ ANNOTATE WITH LAST PAYMENT DATE
+        # This is critical so the database knows exactly when the customer last handed you money
+        all_sales = Sale.objects.annotate(
+            last_payment_date=Max('payment__payment_date')
+        )
+
+        safe_cost = Coalesce(F('total_cost'), 0.0, output_field=FloatField())
+        safe_deposit = Coalesce(F('initial_deposit'), 0.0, output_field=FloatField())
+
+        # ✅ SYNCED OVERDUE LOGIC (Matches the 90-day & last-payment rule perfectly)
+        is_overdue_logic = (
+            ~Q(payment_status__in=['completed', 'paid', 'fully-paid']) & 
+            (
+                Q(payment_status__iexact='overdue') | 
+                Q(due_date__lt=today) | 
+                (Q(last_payment_date__isnull=False) & Q(last_payment_date__lt=ninety_days_ago)) |
+                (Q(last_payment_date__isnull=True) & Q(date_sold__lt=ninety_days_ago))
+            )
+        )
+
+        aggregations = all_sales.aggregate(
+            money_received=Sum(
+                Case(
+                    When(payment_status__iexact='completed', then=safe_cost),
+                    When(payment_status__in=['ongoing', 'pending', 'installment'], then=safe_deposit),
+                    When(payment_status__iexact='overdue', then=safe_deposit),
+                    default=0.0,
+                    output_field=FloatField()
+                )
+            ),
+            receivables=Sum(
+                Case(
+                    When(payment_status__in=['ongoing', 'pending', 'installment', 'overdue'], then=safe_cost - safe_deposit),
+                    default=0.0,
+                    output_field=FloatField()
+                )
+            ),
+            overdue_amount=Sum(
+                Case(
+                    When(is_overdue_logic, then=safe_cost - safe_deposit),
+                    default=0.0,
+                    output_field=FloatField()
+                )
+            )
+        )
+
+        money_received = aggregations["money_received"] or 0
+        receivables = aggregations["receivables"] or 0
+        overdue_amount = aggregations["overdue_amount"] or 0
+        total_revenue = money_received + receivables
+        overdue_count = all_sales.filter(is_overdue_logic).count()
+
+        # Filtering
+        sales_query = all_sales.prefetch_related("items").order_by("-date_sold", "-id")
+
+        if search_query:
+            sales_query = sales_query.filter(
+                Q(name__icontains=search_query) |
+                Q(phone__icontains=search_query) |
+                Q(invoice_number__icontains=search_query) |
+                Q(items__equipment__icontains=search_query)
+            ).distinct()
+
+        if status_filter == 'overdue':
+            sales_query = sales_query.filter(is_overdue_logic)
+        elif status_filter and status_filter != 'all':
+            sales_query = sales_query.filter(payment_status__iexact=status_filter)
+
+        # Pagination
+        paginator = StandardResultsSetPagination()
+        paginated_sales = paginator.paginate_queryset(sales_query, request, view=self)
+
+        rows = []
+        for sale in paginated_sales:
+            items_list = list(sale.items.values("equipment", "equipment_type"))
+            
+            db_status = (sale.payment_status or "pending").lower()
+            
+            if db_status not in ['completed', 'paid', 'fully-paid']:
+                # ✅ DRY PRINCIPLE APPLIED HERE:
+                # We completely removed the manual row-by-row date calculations! 
+                # Now it just asks the master `is_overdue` property we built in your models.py
+                if sale.is_overdue:
+                    display_status = "overdue"
+                else:
+                    display_status = "ongoing"
+            else:
+                display_status = db_status
+
+            rows.append({
+                "payment_id":     sale.invoice_number,
+                "invoice_number": sale.invoice_number,
+                "customer_name":  sale.name,
+                "customer_phone": sale.phone,
+                "items":          items_list,
+                "amount":         str(sale.total_cost),
+                "date":           sale.date_sold.strftime("%Y-%m-%d") if sale.date_sold else "—",
+                "payment_plan":   sale.payment_plan or "Full Payment",
+                "payment_status": display_status, 
+                "state":          sale.state or "—",
+            })
+
+        return Response({
+            "summary": {
+                "total_revenue":  float(total_revenue),
+                "receivables":    float(receivables),
+                "overdue_amount": float(overdue_amount),
+                "overdue_count":  overdue_count,
+                "total_sales":    all_sales.count(),
+            },
+            "payments": rows,
+            "total_pages": getattr(paginator.page.paginator, 'num_pages', 1), 
+            "current_page": getattr(paginator.page, 'number', 1),
+            "total_items": getattr(paginator.page.paginator, 'count', len(rows))
         }, status=status.HTTP_200_OK)
+    
 
 # ----------------------------
 #  CODE MANAGEMENT VIEWS
@@ -1699,8 +1900,9 @@ class ReceiverCodeManagementView(APIView):
                         "tool_name": tool.name,
                         "status": "In Stock",
                         "current_code": code_obj.code if code_obj else "",
-                        "duration": code_obj.duration if code_obj else "",
+                        "duration": getattr(code_obj, 'duration', "") if code_obj else "",
                         "qr_code_image": code_obj.qr_code_image if code_obj else "",
+                        "payment_status": "N/A" # <-- FIXED: Items in stock have no payment status yet
                     })
 
         # --- 2. SOLD RECEIVERS (Team sees all, Customers see their own) ---
@@ -1730,7 +1932,28 @@ class ReceiverCodeManagementView(APIView):
                 sold_items = SaleItem.objects.filter(query, tool__category__icontains='Receiver').select_related('sale', 'tool')
 
         # --- PROCESS SOLD ITEMS ---
+        today = timezone.now().date() 
+
         for item in sold_items:
+            # 1. Calculate the exact database status from the Sale
+            calculated_status = "pending"
+            if item.sale:
+                calculated_status = item.sale.payment_status if item.sale.payment_status else "pending"
+                
+                if item.sale.payment_plan == "Yes" and calculated_status == "pending":
+                    calculated_status = "ongoing"
+
+                if calculated_status.lower() not in ['completed', 'paid']:
+                    if item.sale.due_date and item.sale.due_date < today:
+                        calculated_status = "overdue"
+
+            # 👇 2. NEW TRANSLATOR LOGIC 👇
+            # Translate the database status into the exact words your frontend expects
+            if calculated_status.lower() == 'overdue':
+                final_frontend_status = "Overdue"
+            else:
+                final_frontend_status = "Paid" 
+
             serials = []
             if item.serial_number:
                 try:
@@ -1750,9 +1973,10 @@ class ReceiverCodeManagementView(APIView):
                     "tool_name": item.tool.name,
                     "customer_name": item.sale.name if item.sale else "Unknown",
                     "invoice": item.sale.invoice_number if item.sale else "No Invoice",
+                    "payment_status": final_frontend_status, # <--- Use the translated status!
                     "status": "Sold",
                     "current_code": code_obj.code if code_obj else "",
-                    "duration": code_obj.duration if code_obj else "",
+                    "duration": getattr(code_obj, 'duration', "") if code_obj else "",
                     "qr_code_image": code_obj.qr_code_image if code_obj else "",
                 })
 
