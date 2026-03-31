@@ -19,6 +19,7 @@ from django.db.models import Sum, Count, Max, Q, Case, When, F, FloatField
 from django.core.mail import send_mail, BadHeaderError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.filters import SearchFilter  
 from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes
 from datetime import timedelta, datetime
@@ -199,11 +200,11 @@ class AddCustomerView(generics.CreateAPIView):
 class CustomerListView(generics.ListAPIView):
     serializer_class = CustomerSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [SearchFilter]
+    search_fields = ['name', 'email', 'phone']
 
     def get_queryset(self):
-        user = self.request.user
-        if user.role == "admin":
-            return Customer.objects.all().order_by("-id")
         return Customer.objects.all().order_by("-id")
     
 # ----------------------------
