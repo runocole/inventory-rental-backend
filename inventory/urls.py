@@ -1,13 +1,14 @@
 from django.urls import path
 from .views import (
-    EmailLoginView, AddStaffView, PaymentSummaryView, SaveReceiverCodeView, StaffListView,ReceiverCodeManagementView,
+    EmailLoginView, AddStaffView, MonthlyRevenueView, PaymentSummaryView, ResetSaleView, SaveReceiverCodeView, SimulateInactivityView, StaffListView,ReceiverCodeManagementView,
     ToolListCreateView, ToolDetailView, EquipmentTypeListView, EquipmentTypeDetailView,
     SaleListCreateView, SaleDetailView,CodeBatchListCreateView,CodeBatchItemsView,
     PaymentListCreateView, PaymentDetailView,CodeBatchUploadCSVView,CodeBatchDownloadCSVView,
     DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, 
     SupplierListView, SupplierDetailView, equipment_by_invoice,
     ToolGetRandomSerialView, ToolSoldSerialsView,  ToolGroupedListView, ToolAssignRandomFromGroupView, CustomerOwingDataView, ImportCodesView,
-    AssignCodeView, CustomerCodesView, GenerateEmergencyCodeView, AvailableCodesView, ReceiversNeedingCodesView,SendBulkExpirationEmailsView
+    AssignCodeView, CustomerCodesView, GenerateEmergencyCodeView, AvailableCodesView, ReceiversNeedingCodesView,
+    SendBulkExpirationEmailsView,StaffSalesView,SyncCustomerFinancialsView,
 )
 urlpatterns = [
     # --- Auth ---
@@ -17,8 +18,10 @@ urlpatterns = [
 
     # --- Customers ---
     path("customers/add", AddCustomerView.as_view(), name="add-customer"),
+    path("customers/sync-financials/", SyncCustomerFinancialsView.as_view(), name="sync-customer-financials"),
     path("customers/", CustomerListView.as_view(), name="customers"),
-     path('customer-owing/', CustomerOwingDataView.as_view(), name='customer-owing-data'),
+    path('customer-owing/', CustomerOwingDataView.as_view(), name='customer-owing-data'),
+
     # --- Tools ---
     path("tools/", ToolListCreateView.as_view(), name="tools"),
     path("tools/<uuid:pk>/", ToolDetailView.as_view(), name="tool-detail"),
@@ -36,6 +39,7 @@ urlpatterns = [
 
     # --- Sales ---
     path("sales/", SaleListCreateView.as_view(), name="sales"),
+    path("sales/by-staff/", StaffSalesView.as_view(), name="sales-by-staff"),
     path("sales/<int:pk>/", SaleDetailView.as_view(), name="sale-detail"),
 
     # --- Email --- 
@@ -52,6 +56,7 @@ urlpatterns = [
 
     # Dashboard
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('dashboard/monthly-revenue/', MonthlyRevenueView.as_view(), name='monthly-revenue'),
 
     # Code management URLs
     path('codes/import/', ImportCodesView.as_view(), name='import-codes'),
@@ -66,4 +71,6 @@ urlpatterns = [
     path("code-batches/<int:pk>/upload-csv/",CodeBatchUploadCSVView.as_view(),name="code-batch-upload-csv"),
     path("code-batches/<int:pk>/download-csv/",CodeBatchDownloadCSVView.as_view(),name="code-batch-download-csv"),
     path("code-batches/<int:pk>/items/", CodeBatchItemsView.as_view(), name="code-batch-items"),
+    path('debug/simulate-inactivity/', SimulateInactivityView.as_view(), name='simulate-inactivity'),
+    path('debug/reset-sale/', ResetSaleView.as_view(), name='reset-sale'),
 ]

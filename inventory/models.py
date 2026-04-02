@@ -61,24 +61,29 @@ class User(AbstractBaseUser, PermissionsMixin):
 # ----------------------------
 class Customer(models.Model):
     STATUS_CHOICES = [
-        ('on-track', 'On Track'),
-        ('due-soon', 'Due Soon'),
+        ('ongoing', 'Ongoing'),
         ('overdue', 'Overdue'),
         ('fully-paid', 'Fully Paid')
     ]
-    
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="customer",
-        null=True,
-        blank=True,
+    # ... (keep all the other fields exactly the same until you hit status)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='ongoing', # <--- THIS MUST BE ONGOING
+        verbose_name="Payment Status"
     )
     name = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField(blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
     is_activated = models.BooleanField(default=False)
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='customer_profile'
+    )
     
     # Installment tracking fields
     total_selling_price = models.DecimalField(
@@ -112,7 +117,7 @@ class Customer(models.Model):
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default='on-track',
+        default='ongoing',
         verbose_name="Payment Status"
     )
     progress = models.IntegerField(
@@ -139,41 +144,43 @@ class Customer(models.Model):
         super().save(*args, **kwargs)
 
     def update_status(self):
-        """Update customer status based on payment progress and dates"""
+        """Update customer status based on payment progress, sales, and dates"""
         from django.utils import timezone
-        from datetime import timedelta
         
+        # Prevent circular import errors
+        try:
+            from .models import Sale
+        except ImportError:
+            pass 
+
+        # 1. Check if fully paid
         if self.amount_left <= 0:
             self.status = 'fully-paid'
             return
+            
+        # 2. Check if ANY linked sale is overdue
+        if self.phone:
+            linked_sales = Sale.objects.filter(phone=self.phone)
+        elif getattr(self, 'name', None):
+            linked_sales = Sale.objects.filter(name__iexact=self.name)
+        else:
+            linked_sales = []
+            
+        if linked_sales and any(getattr(sale, 'is_overdue', False) for sale in linked_sales):
+            self.status = 'overdue'
+            return
         
+        # 3. Standard date logic (Ongoing vs Overdue only)
         today = timezone.now().date()
         
         if not self.date_next_installment:
-            self.status = 'on-track'
+            self.status = 'ongoing'
             return
             
-        # Check if overdue (past due date)
         if self.date_next_installment < today:
             self.status = 'overdue'
-        # Check if due soon (within next 7 days)
-        elif self.date_next_installment <= today + timedelta(days=7):
-            self.status = 'due-soon'
         else:
-            self.status = 'on-track'
-
-    def make_payment(self, amount, payment_date=None):
-        """Helper method to record a payment"""
-        from django.utils import timezone
-        
-        self.amount_paid += amount
-        
-        if payment_date:
-            self.date_last_paid = payment_date
-        else:
-            self.date_last_paid = timezone.now().date()
-            
-        self.save()
+            self.status = 'ongoing'
 
     def set_next_installment_date(self, date):
         """Set the next installment date"""
@@ -207,7 +214,7 @@ def create_user_for_customer(sender, instance, created, **kwargs):
             email=instance.email or f"{instance.phone}@example.com",
             password="defaultpass123",
             role="customer",
-            is_active=False,
+            is_active=True,  # <--- CHANGED TO TRUE
         )
         instance.user = user
         instance.save()
@@ -747,3 +754,94 @@ class CodeAssignmentLog(models.Model):
     
     def __str__(self):
         return f"Code {self.code.code} → {self.receiver_serial}"
+    
+# ----------------------------
+#  AUTO-SYNC SIGNALS
+# ----------------------------
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+from django.db.models import Sum
+from decimal import Decimal
+
+def sync_single_customer(customer):
+    """Recalculates a single customer's financials and updates their status"""
+    if not customer:
+        return
+
+    # 1. Find all sales for this customer (matching logic from your sync view)
+    if customer.phone:
+        customer_sales = Sale.objects.filter(phone=customer.phone)
+    elif customer.name:
+        customer_sales = Sale.objects.filter(name__iexact=customer.name)
+    else:
+        return
+
+    if not customer_sales.exists():
+        customer.total_selling_price = Decimal('0')
+        customer.amount_paid = Decimal('0')
+        customer.date_next_installment = None
+        customer.save()
+        return
+
+    # 2. Calculate Total Selling Price
+    total_selling = customer_sales.aggregate(total=Sum('total_cost'))['total'] or Decimal('0')
+
+    # 3. Calculate Amount Paid
+    amount_paid = Decimal('0')
+    for sale in customer_sales:
+        sale_status = (sale.payment_status or '').lower()
+        if sale_status in ['completed', 'paid', 'fully-paid']:
+            amount_paid += Decimal(str(sale.total_cost or '0'))
+        elif sale_status in ['ongoing', 'overdue']:
+            initial = Decimal(str(sale.initial_deposit or '0'))
+            logged = Payment.objects.filter(sale=sale).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            amount_paid += max(initial, Decimal(str(logged)))
+
+    # 4. Find Next Installment Date
+    next_due = customer_sales.exclude(
+        payment_status__in=['completed', 'paid', 'fully-paid']
+    ).exclude(
+        due_date__isnull=True
+    ).order_by('-date_sold').values_list('due_date', flat=True).first()
+
+    # 5. Find Last Paid Date
+    latest_payment = Payment.objects.filter(sale__in=customer_sales).order_by('-payment_date').first()
+    if latest_payment and latest_payment.payment_date:
+        customer.date_last_paid = latest_payment.payment_date.date() if hasattr(latest_payment.payment_date, 'date') else latest_payment.payment_date
+    else:
+        completed = customer_sales.filter(payment_status__in=['completed', 'paid', 'fully-paid']).order_by('-date_sold').first()
+        if completed:
+            customer.date_last_paid = completed.date_sold
+
+    # 6. Save (This triggers your existing Customer.save() which auto-calculates amount_left and progress)
+    customer.total_selling_price = total_selling
+    customer.amount_paid = amount_paid
+    customer.date_next_installment = next_due
+    customer.save()
+
+    # 7. Force Override Status based on Sales
+    has_overdue_sale = any(sale.is_overdue for sale in customer_sales)
+    all_completed = not customer_sales.exclude(payment_status__in=['completed', 'paid', 'fully-paid']).exists()
+
+    if has_overdue_sale:
+        Customer.objects.filter(pk=customer.pk).update(status='overdue')
+    elif all_completed and float(total_selling) > 0:
+        Customer.objects.filter(pk=customer.pk).update(status='fully-paid')
+
+
+# Listen for any saved or deleted Payment
+@receiver([post_save, post_delete], sender=Payment)
+def trigger_customer_sync_on_payment(sender, instance, **kwargs):
+    # If the payment has a linked sale, sync via the sale's phone number
+    if instance.sale:
+        customer = Customer.objects.filter(phone=instance.sale.phone).first()
+        if customer:
+            sync_single_customer(customer)
+
+# Listen for any saved or deleted Sale
+@receiver([post_save, post_delete], sender=Sale)
+def trigger_customer_sync_on_sale(sender, instance, **kwargs):
+    # Find the customer by the phone number on the sale
+    customer = Customer.objects.filter(phone=instance.phone).first()
+    if customer:
+        sync_single_customer(customer)

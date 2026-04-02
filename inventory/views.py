@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models, transaction
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
@@ -36,6 +38,7 @@ import base64
 import random
 from django.db.models.functions import Coalesce
 from io import BytesIO
+from decimal import Decimal
 
 
 
@@ -104,6 +107,25 @@ class StaffListView(generics.ListAPIView):
 
     def get_queryset(self):
         return User.objects.filter(role="staff")
+
+
+class StaffSalesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        staff_name = request.query_params.get('name', '').strip()
+        if not staff_name:
+            return Response(
+                {"detail": "Staff name query param is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # Sale.staff is stored as a plain name string for BOTH
+        # registered users and hardcoded staff — so iexact works for both.
+        sales = Sale.objects.filter(
+            staff__iexact=staff_name
+        ).prefetch_related('items').order_by("-date_sold")
+        serializer = SaleSerializer(sales, many=True, context={"request": request})
+        return Response(serializer.data)
 
 
 # ----------------------------
@@ -216,7 +238,9 @@ class CustomerOwingDataView(APIView):
     def get(self, request):
         try:
             # Get all customers
-            customers = Customer.objects.all()
+            customers = Customer.objects.filter(
+                status__in=['ongoing', 'overdue']  # <--- Updated to match the new status
+            ).exclude(total_selling_price=0)
             
             # Calculate summary statistics
             total_selling_price = sum(customer.total_selling_price for customer in customers)
@@ -265,6 +289,244 @@ class CustomerOwingDataView(APIView):
                 {"error": "Failed to fetch customer owing data"}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+class SyncCustomerFinancialsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from decimal import Decimal
+        try:
+            customers = Customer.objects.all()
+            synced = 0
+            skipped = 0
+
+            for customer in customers:
+                if customer.phone:
+                    customer_sales = Sale.objects.filter(phone=customer.phone)
+                elif customer.name:
+                    customer_sales = Sale.objects.filter(name__iexact=customer.name)
+                else:
+                    skipped += 1
+                    continue
+
+                if not customer_sales.exists():
+                    customer.total_selling_price = Decimal('0')
+                    customer.amount_paid = Decimal('0')
+                    customer.date_next_installment = None
+                    customer.save()
+                    skipped += 1
+                    continue
+
+                total_selling = customer_sales.aggregate(
+                    total=Sum('total_cost')
+                )['total'] or Decimal('0')
+
+                amount_paid = Decimal('0')
+                for sale in customer_sales:
+                    sale_status = (sale.payment_status or '').lower()
+                    if sale_status in ['completed', 'paid', 'fully-paid']:
+                        amount_paid += Decimal(str(sale.total_cost or '0'))
+                    elif sale_status in ['ongoing', 'overdue', 'pending', 'installment']:
+                        initial = Decimal(str(sale.initial_deposit or '0'))
+                        logged = Payment.objects.filter(
+                            sale=sale
+                        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+                        amount_paid += max(initial, Decimal(str(logged)))
+
+                next_due = customer_sales.exclude(
+                    payment_status__in=['completed', 'paid', 'fully-paid']
+                ).exclude(
+                    due_date__isnull=True
+                ).order_by('-date_sold').values_list('due_date', flat=True).first()
+
+                latest_payment = Payment.objects.filter(
+                    sale__in=customer_sales
+                ).order_by('-payment_date').first()
+
+                if latest_payment and latest_payment.payment_date:
+                    customer.date_last_paid = (
+                        latest_payment.payment_date.date()
+                        if hasattr(latest_payment.payment_date, 'date')
+                        else latest_payment.payment_date
+                    )
+                else:
+                    completed = customer_sales.filter(
+                        payment_status__in=['completed', 'paid', 'fully-paid']
+                    ).order_by('-date_sold').first()
+                    if completed:
+                        customer.date_last_paid = completed.date_sold
+
+                customer.total_selling_price = total_selling
+                customer.amount_paid = amount_paid
+                customer.date_next_installment = next_due
+                customer.save()
+
+                # ── OVERDUE LOGIC ──────────────────────────────────────
+                today = timezone.now().date()
+
+                fresh_sales = list(
+                    Sale.objects.filter(phone=customer.phone)
+                    if customer.phone
+                    else Sale.objects.filter(name__iexact=customer.name)
+                )
+
+                active_sales = [
+                    s for s in fresh_sales
+                    if (s.payment_status or '').lower()
+                    not in ['completed', 'paid', 'fully-paid']
+                ]
+
+                for sale in active_sales:
+                    # Rule 1: due_date passed — permanent overdue
+                    if sale.due_date and today >= sale.due_date:
+                        Sale.objects.filter(pk=sale.pk).update(
+                            payment_status='overdue'
+                        )
+                        continue
+
+                    # Rule 2: 90-day inactivity
+                    last_payment = Payment.objects.filter(
+                        sale=sale
+                    ).order_by('-payment_date').first()
+
+                    if last_payment and last_payment.payment_date:
+                        last_activity = (
+                            last_payment.payment_date.date()
+                            if hasattr(last_payment.payment_date, 'date')
+                            else last_payment.payment_date
+                        )
+                    else:
+                        last_activity = sale.date_sold
+
+                    days_inactive = (
+                        (today - last_activity).days
+                        if last_activity else 0
+                    )
+
+                    if days_inactive >= 90:
+                        print(f"DEBUG: Sale {sale.pk} OVERDUE — {days_inactive} days inactive, date_sold={sale.date_sold}, last_activity={last_activity}")
+                        Sale.objects.filter(pk=sale.pk).update(payment_status='overdue')
+                    else:
+                        print(f"DEBUG: Sale {sale.pk} ONGOING — {days_inactive} days inactive, date_sold={sale.date_sold}, last_activity={last_activity}")
+                        Sale.objects.filter(pk=sale.pk).update(payment_status='ongoing')
+
+                    if customer.phone:
+                        customer_sales = Sale.objects.filter(phone=customer.phone)
+                    else:
+                        customer_sales = Sale.objects.filter(name__iexact=customer.name)
+
+                    has_overdue = customer_sales.filter(
+                        payment_status='overdue'
+                    ).exists()
+
+                    # ADD THIS LINE
+                    print(f"DEBUG CUSTOMER: {customer.name} | phone={customer.phone} | has_overdue={has_overdue} | sales_statuses={list(customer_sales.values_list('id', 'payment_status'))}")
+
+                    all_completed = not customer_sales.exclude(
+                        payment_status__in=['completed', 'paid', 'fully-paid']
+                    ).exists()
+
+                    if has_overdue:
+                        Customer.objects.filter(pk=customer.pk).update(status='overdue')
+                    elif all_completed and float(total_selling) > 0:
+                        Customer.objects.filter(pk=customer.pk).update(status='fully-paid')
+
+                # Re-fetch after updates
+                if customer.phone:
+                    customer_sales = Sale.objects.filter(phone=customer.phone)
+                else:
+                    customer_sales = Sale.objects.filter(name__iexact=customer.name)
+
+                has_overdue = customer_sales.filter(
+                    payment_status='overdue'
+                ).exists()
+
+                all_completed = not customer_sales.exclude(
+                    payment_status__in=['completed', 'paid', 'fully-paid']
+                ).exists()
+
+                if has_overdue:
+                    Customer.objects.filter(pk=customer.pk).update(status='overdue')
+                elif all_completed and float(total_selling) > 0:
+                    Customer.objects.filter(pk=customer.pk).update(status='fully-paid')
+
+                synced += 1
+
+            return Response({
+                "success": True,
+                "synced": synced,
+                "skipped": skipped,
+                "message": f"Synced {synced} customers, {skipped} had no sales."
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"error": f"Sync failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class SimulateInactivityView(APIView):
+    """
+    POST /debug/simulate-inactivity/
+    TEST ONLY — simulates 90+ day inactivity on a sale.
+    Remove this endpoint before going to production.
+
+    Body: { "sale_id": 6, "days_inactive": 91 }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from datetime import timedelta
+        sale_id = request.data.get('sale_id')
+        days_inactive = int(request.data.get('days_inactive', 91))
+
+        if not sale_id:
+            return Response({"error": "sale_id required"}, status=400)
+
+        try:
+            sale = Sale.objects.get(pk=sale_id)
+
+            # 1. Backdate date_sold
+            fake_date = timezone.now().date() - timedelta(days=days_inactive)
+            Sale.objects.filter(pk=sale_id).update(date_sold=fake_date)
+
+            # 2. Delete all Payment records for this sale
+            # so last_activity falls back to date_sold
+            deleted_count, _ = Payment.objects.filter(sale=sale).delete()
+
+            return Response({
+                "success": True,
+                "sale_id": sale_id,
+                "date_sold_set_to": str(fake_date),
+                "payments_deleted": deleted_count,
+                "message": f"Sale {sale_id} now has {days_inactive} days of inactivity. Click Sync Data to trigger overdue."
+            })
+
+        except Sale.DoesNotExist:
+            return Response({"error": f"Sale {sale_id} not found"}, status=404)
+
+class ResetSaleView(APIView):
+    """
+    POST /debug/reset-sale/
+    TEST ONLY — resets a sale's date_sold back to today.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        sale_id = request.data.get('sale_id')
+        if not sale_id:
+            return Response({"error": "sale_id required"}, status=400)
+        try:
+            Sale.objects.filter(pk=sale_id).update(
+                date_sold=timezone.now().date(),
+                payment_status='ongoing'
+            )
+            return Response({"success": True, "message": f"Sale {sale_id} reset to today."})
+        except Sale.DoesNotExist:
+            return Response({"error": f"Sale {sale_id} not found"}, status=404)
+
 # ----------------------------
 # TOOLS
 # ----------------------------
@@ -835,9 +1097,41 @@ class SaleListCreateView(generics.ListCreateAPIView):
         search_query = self.request.query_params.get('search', '').strip()
         staff_filter = self.request.query_params.get('staff_id') 
         status_filter = self.request.query_params.get('status') 
+        start_date    = self.request.query_params.get('start_date', '').strip()
+        end_date      = self.request.query_params.get('end_date', '').strip()
+
 
         if staff_filter:
             queryset = queryset.filter(staff__icontains=staff_filter)
+
+        if start_date:
+            try:
+                from datetime import datetime
+                # Handle both DD-MM-YYYY (from DB display) and YYYY-MM-DD (from date picker)
+                if len(start_date) == 10 and start_date[2] == '-':
+                    parsed_start = datetime.strptime(start_date, "%d-%m-%Y").date()
+                else:
+                     parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                queryset = queryset.filter(date_sold__gte=parsed_start)
+            except (ValueError, AttributeError):
+                pass
+
+        if end_date:
+            try:
+                from datetime import datetime
+                if len(end_date) == 10 and end_date[2] == '-':
+                    parsed_end = datetime.strptime(end_date, "%d-%m-%Y").date()
+                else:
+                    parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                queryset = queryset.filter(date_sold__lte=parsed_end)
+            except (ValueError, AttributeError):
+                pass
+            # Add one day to make end date fully inclusive
+            try:
+                end_inclusive = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                queryset = queryset.filter(date_sold__lt=end_inclusive)
+            except ValueError:
+                queryset = queryset.filter(date_sold__lte=end_date)
 
         # ✅ NEW: 90-DAY LIVE STATUS FILTERING
         if status_filter == 'overdue':
@@ -866,6 +1160,45 @@ class SaleListCreateView(generics.ListCreateAPIView):
             ).distinct()
 
         return queryset
+    
+    def list(self, request, *args, **kwargs):
+        # 1. Get the filtered list of sales 
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # 2. Calculate summary stats
+        from django.db.models import Sum
+        
+        total_revenue = queryset.filter(
+            payment_status__in=['ongoing', 'completed']
+        ).aggregate(Sum('total_cost'))['total_cost__sum'] or 0
+        
+        ongoing_sales = queryset.filter(payment_status='ongoing').count()
+        overdue_sales = queryset.filter(payment_status='overdue').count()
+        completed_sales = queryset.filter(payment_status='completed').count()
+
+        summary_data = {
+            "total_revenue": total_revenue,
+            "ongoing_sales": ongoing_sales,
+            "overdue_sales": overdue_sales,
+            "completed_sales": completed_sales,
+        }
+
+        # 3. Handle Pagination and inject the summary
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            
+            # INJECT THE SUMMARY INTO THE JSON RESPONSE
+            response.data['summary'] = summary_data
+            return response
+
+        # Fallback if pagination is turned off
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            "summary": summary_data,
+            "results": serializer.data
+        })
 
     def perform_create(self, serializer):
         # 1. Get the raw data from the request
@@ -1136,6 +1469,72 @@ class DashboardSummaryView(APIView):
             }
         )
 
+class MonthlyRevenueView(APIView):
+    """
+    GET /dashboard/monthly-revenue/
+
+    Returns revenue grouped by month across all time.
+    Used by the dashboard Revenue card modal to show
+    month-by-month breakdown with running totals.
+
+    Response shape:
+    {
+        "months": [
+            {
+                "month": "January 2025",
+                "year": 2025,
+                "month_number": 1,
+                "revenue": 3800000.00,
+                "sales_count": 4
+            },
+            ...
+        ],
+        "total_all_time": 15200000.00,
+        "total_sales_count": 18
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models.functions import TruncMonth
+        from django.db.models import Sum, Count
+        import calendar
+
+        # Group all sales by month
+        monthly_data = (
+            Sale.objects
+            .annotate(month=TruncMonth('date_sold'))
+            .values('month')
+            .annotate(
+                revenue=Sum('total_cost'),
+                sales_count=Count('id')
+            )
+            .order_by('-month')  # Most recent first
+        )
+
+        months_list = []
+        for entry in monthly_data:
+            if entry['month']:
+                month_name = entry['month'].strftime('%B %Y')  # e.g. "March 2026"
+                months_list.append({
+                    'month': month_name,
+                    'year': entry['month'].year,
+                    'month_number': entry['month'].month,
+                    'revenue': float(entry['revenue'] or 0),
+                    'sales_count': entry['sales_count'] or 0,
+                })
+
+        total_all_time = Sale.objects.aggregate(
+            total=Sum('total_cost')
+        )['total'] or 0
+
+        total_sales_count = Sale.objects.count()
+
+        return Response({
+            'months': months_list,
+            'total_all_time': float(total_all_time),
+            'total_sales_count': total_sales_count,
+        })
 # ----------------------------
 # PAYMENTS
 # ----------------------------
