@@ -469,6 +469,7 @@ class Sale(models.Model):
     # 🔹 Customer information (stored directly in Sale)
     name = models.CharField(max_length=255, db_index=True)
     phone = models.CharField(max_length=20, db_index=True)
+    email = models.EmailField(blank=True, null=True, db_index=True)
     state = models.CharField(max_length=100)
     total_cost = models.DecimalField(max_digits=10, decimal_places=2)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, verbose_name="Tax Amount (7.5%)")

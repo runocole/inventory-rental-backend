@@ -1100,7 +1100,6 @@ class SaleListCreateView(generics.ListCreateAPIView):
         start_date    = self.request.query_params.get('start_date', '').strip()
         end_date      = self.request.query_params.get('end_date', '').strip()
 
-
         if staff_filter:
             queryset = queryset.filter(staff__icontains=staff_filter)
 
@@ -1135,10 +1134,6 @@ class SaleListCreateView(generics.ListCreateAPIView):
 
         # ✅ NEW: 90-DAY LIVE STATUS FILTERING
         if status_filter == 'overdue':
-            # A sale is dynamically overdue if:
-            # 1. It is NOT paid off
-            # AND
-            # 2. (The explicit string says 'overdue' OR due date passed OR 90 days inactive)
             queryset = queryset.filter(
                 ~Q(payment_status__in=['completed', 'paid', 'fully-paid']) & 
                 (
@@ -1194,6 +1189,7 @@ class SaleListCreateView(generics.ListCreateAPIView):
             return response
 
         # Fallback if pagination is turned off
+        from rest_framework.response import Response
         serializer = self.get_serializer(queryset, many=True)
         return Response({
             "summary": summary_data,
@@ -1204,35 +1200,43 @@ class SaleListCreateView(generics.ListCreateAPIView):
         # 1. Get the raw data from the request
         staff_from_form = self.request.data.get('staff')
         import_invoice = self.request.data.get('import_invoice')
-        
-        # --- NEW STATUS LOGIC ---
-        # 2. Get the payment plan from the form
+
+        # 2. Get payment plan
         payment_plan = self.request.data.get('payment_plan', 'No')
-        
-        # 3. Apply your rules: Yes = ongoing, No = completed
+
+        # 3. Apply status rules
         if payment_plan == 'Yes':
             new_status = 'ongoing'
         else:
             new_status = 'completed'
-        # ------------------------
 
-        # 4. Save with both Staff AND the new Status
+        # 4. Look up customer email by phone to store on the Sale record
+        phone_from_form = self.request.data.get('phone', '')
+        customer_email = ''
+        if phone_from_form:
+            cust = Customer.objects.filter(phone=phone_from_form).first()
+            if cust:
+                customer_email = cust.email or ''
+
+        # 5. Save with staff, status and email
         if staff_from_form and str(staff_from_form).strip() not in ["", "null", "undefined"]:
             serializer.save(
-                staff=str(staff_from_form), 
+                staff=str(staff_from_form),
                 import_invoice=import_invoice,
-                payment_status=new_status  # <--- Logic applied here
+                payment_status=new_status,
+                email=customer_email,
             )
         else:
             user = self.request.user
             fallback_name = getattr(user, 'name', None) or getattr(user, 'username', 'Admin')
             serializer.save(
-                staff=fallback_name, 
+                staff=fallback_name,
                 import_invoice=import_invoice,
-                payment_status=new_status  # <--- Logic applied here
+                payment_status=new_status,
+                email=customer_email,
             )
 
-        # 5. Handle Items (rest of your existing code...)
+        # 6. Handle Items
         sale = serializer.instance
         items_raw_data = self.request.data.get('items', [])
         for i, item in enumerate(sale.items.all()):
@@ -2591,92 +2595,93 @@ class CodeBatchUploadCSVView(APIView):
         Returns a dict mapping row numbers to base64-encoded images.
         """
         qr_codes = {}
-        
+
         try:
-            # Save uploaded file temporarily
             temp_file = BytesIO(uploaded_file.read())
             wb = load_workbook(temp_file)
             ws = wb.active
-            
-            # Excel images are stored in worksheet._images
+
             for img in ws._images:
-                # Get the anchor position (which cell the image is in)
                 if hasattr(img, 'anchor') and hasattr(img.anchor, '_from'):
-                    row = img.anchor._from.row + 1  # Excel rows are 0-indexed in openpyxl
-                    
-                    # Convert image to base64
+                    row = img.anchor._from.row + 1
+
                     if hasattr(img, '_data'):
                         image_data = img._data()
-                        
-                        # Convert to PIL Image and then to base64
                         pil_image = PILImage.open(BytesIO(image_data))
-                        
-                        # Resize if too large (optional - for storage efficiency)
+
                         max_size = (300, 300)
                         pil_image.thumbnail(max_size, PILImage.Resampling.LANCZOS)
-                        
-                        # Convert to base64
+
                         buffered = BytesIO()
                         pil_image.save(buffered, format="PNG")
                         img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-                        
+
                         qr_codes[row] = img_base64
-                        print(f"[QR Extract] Found QR code at row {row}")
-            
-            print(f"[QR Extract] Total QR codes extracted: {len(qr_codes)}")
-            
+
         except Exception as e:
-            print(f"[QR Extract] Error extracting QR codes: {e}")
             import traceback
             traceback.print_exc()
-        
+
         return qr_codes
 
     def post(self, request, pk):
+        # Initialize variables
+        imported = 0
+        errors = []
+        qr_codes = {}
+        rows = []
+        cols = set()
+
         batch = get_object_or_404(CodeBatch, pk=pk)
 
         uploaded_file = request.FILES.get("file")
         if not uploaded_file:
-            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
-
-        file_ext = uploaded_file.name.lower().split('.')[-1]
-        if file_ext not in ['csv', 'xlsx', 'xls']:
             return Response(
-                {"detail": "Only .csv, .xlsx, and .xls files are accepted."}, 
+                {"detail": "No file uploaded."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Extract QR codes from Excel file (if it's Excel)
-        qr_codes = {}
+        file_ext = uploaded_file.name.lower().split('.')[-1]
+
+        if file_ext not in ['csv', 'xlsx', 'xls']:
+            return Response(
+                {"detail": "Only .csv, .xlsx, and .xls files are accepted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Extract QR codes from Excel before reading data
         if file_ext in ['xlsx', 'xls']:
             qr_codes = self._extract_qr_codes_from_excel(uploaded_file)
-            uploaded_file.seek(0)  # Reset file pointer after extraction
+            uploaded_file.seek(0)
 
-        # Read file based on type
+        # Read file data
         if file_ext in ['xlsx', 'xls']:
-            df = pd.read_excel(BytesIO(uploaded_file.read()))
-            
+            import pandas as pd
+            from io import BytesIO as _BytesIO
+            df = pd.read_excel(_BytesIO(uploaded_file.read()))
             df.columns = [
                 str(col).strip().lower().replace(" ", "_").replace("-", "_")
                 for col in df.columns
             ]
             cols = set(df.columns)
             rows = df.to_dict('records')
-            
-            print(f"[Excel Upload] Batch={batch.batch_number} | Columns: {sorted(cols)}")
-            
+
         else:
-            # CSV logic
+            import csv as _csv
+            import io as _io
             raw = uploaded_file.read()
             try:
                 decoded = raw.decode("utf-8-sig")
             except UnicodeDecodeError:
                 decoded = raw.decode("latin-1")
 
-            reader = csv.DictReader(io.StringIO(decoded))
+            reader = _csv.DictReader(_io.StringIO(decoded))
 
             if not reader.fieldnames:
-                return Response({"detail": "CSV appears to be empty."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "CSV appears to be empty."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             reader.fieldnames = [
                 f.strip().lower().replace(" ", "_").replace("-", "_")
@@ -2684,31 +2689,25 @@ class CodeBatchUploadCSVView(APIView):
             ]
             cols = set(reader.fieldnames)
             rows = list(reader)
-            
-            print(f"[CSV Upload] Batch={batch.batch_number} | Columns: {sorted(cols)}")
 
+        # Validate serial number column exists
         if "serial_number" not in cols and "sn" not in cols:
             return Response(
                 {"detail": f"File must have a 'serial_number' or 'SN' column. Found: {sorted(cols)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Detect format
-        is_supplier_format = bool(
-            cols & {"current_code", "code", "activation_code", "activationcode", "temporary_code"}
+        # Detect format — supplier format has activation codes, assignment format has customer info
+        columns = [str(c).lower() for c in rows[0].keys()] if rows else []
+        is_supplier_format = any(
+            col in columns
+            for col in ['code', 'current_code', 'activation_code', 'activationcode', 'temporary_code']
         )
-        print(f"[File Upload] Format: {'SUPPLIER (codes)' if is_supplier_format else 'ASSIGNMENT (customers)'}")
-
-        imported = 0
-        errors   = []
 
         if is_supplier_format:
-            # FORMAT A: Process codes with QR codes
             for row_num, row in enumerate(rows, start=2):
-                # Support both "serial_number" and "sn" columns
                 serial = str(row.get("serial_number") or row.get("sn") or "").strip()
 
-                # Support multiple code column names
                 code = str(
                     row.get("code", "") or
                     row.get("current_code", "") or
@@ -2732,32 +2731,97 @@ class CodeBatchUploadCSVView(APIView):
                 )
                 expiry_date = self._parse_date(expiry_raw)
 
-                row_status        = str(row.get("status", "not sold")).strip().lower()
-                row_payment       = str(row.get("payment_status", "not_applicable")).strip().lower()
+                row_status         = str(row.get("status", "not sold")).strip().lower()
+                row_payment        = str(row.get("payment_status", "not_applicable")).strip().lower()
                 row_customer_email = str(row.get("customer_email", "")).strip()
                 row_customer_name  = str(row.get("customer_name", "")).strip()
                 row_assigned_date  = self._parse_date(row.get("assigned_date", ""))
 
-                # Get QR code for this row (if available)
+                # Clean up pandas NaN strings
+                if row_customer_email.lower() in ['nan', 'none', 'null']:
+                    row_customer_email = ""
+                if row_customer_name.lower() in ['nan', 'none', 'null']:
+                    row_customer_name = ""
+
                 qr_code_base64 = qr_codes.get(row_num, None)
 
-                print(f"[File Row {row_num}] serial={serial} | code={code[:20]} | has_qr={bool(qr_code_base64)}")
-
                 try:
-                    # Save activation code with QR code
+                    import json
+
+                    # Auto-match serial to SaleItem if no customer info in the file
+                    if not row_customer_name and not row_customer_email:
+                        matched_sale_item = None
+
+                        # Try exact match first
+                        exact = SaleItem.objects.filter(
+                            serial_number=serial
+                        ).select_related('sale').first()
+
+                        if exact:
+                            matched_sale_item = exact
+                        else:
+                            # Try JSON array match
+                            for item in SaleItem.objects.exclude(
+                                serial_number__isnull=True
+                            ).exclude(serial_number='').select_related('sale'):
+                                try:
+                                    parsed = json.loads(item.serial_number)
+                                    if isinstance(parsed, list):
+                                        cleaned = [str(s).strip().upper() for s in parsed]
+                                        if serial.upper() in cleaned:
+                                            matched_sale_item = item
+                                            break
+                                except (json.JSONDecodeError, TypeError):
+                                    if serial.upper() in str(item.serial_number).upper():
+                                        matched_sale_item = item
+                                        break
+
+                        if matched_sale_item and matched_sale_item.sale:
+                            sale_record = matched_sale_item.sale
+                            row_customer_name = sale_record.name or row_customer_name
+
+                            # Try email from Sale record directly
+                            if not row_customer_email and getattr(sale_record, 'email', None):
+                                row_customer_email = sale_record.email
+
+                            # Fallback — look up Customer by phone
+                            if not row_customer_email and sale_record.phone:
+                                cust = Customer.objects.filter(
+                                    phone=sale_record.phone
+                                ).first()
+                                if cust:
+                                    row_customer_email = cust.email or ''
+
+                            # Fallback — look up Customer by name
+                            if not row_customer_email and sale_record.name:
+                                cust = Customer.objects.filter(
+                                    name__iexact=sale_record.name
+                                ).first()
+                                if cust:
+                                    row_customer_email = cust.email or ''
+
+                            # Mark as sold since we found a matching sale
+                            if row_status == 'not sold':
+                                row_status = 'active'
+
+                            # Use sale payment status if not set
+                            if not row_payment or row_payment == 'not_applicable':
+                                row_payment = sale_record.payment_status or row_payment
+
+                    # Save or update activation code
                     ActivationCode.objects.update_or_create(
                         receiver_serial=serial,
                         defaults={
-                            "code":            code,
-                            "batch":           batch,
-                            "expiry_date":     expiry_date,
-                            "status":          "assigned" if row_status == "active" else "available",
-                            "assigned_date":   timezone.now() if row_status == "active" else None,
-                            "qr_code_image":   qr_code_base64,  # NEW: Save QR code
+                            "code":          code,
+                            "batch":         batch,
+                            "expiry_date":   expiry_date,
+                            "status":        "assigned" if row_status == "active" else "available",
+                            "assigned_date": timezone.now() if row_status == "active" else None,
+                            "qr_code_image": qr_code_base64,
                         }
                     )
 
-                    # Update BatchSerial
+                    # Save or update batch serial with customer info
                     BatchSerial.objects.update_or_create(
                         batch=batch,
                         serial_number=serial,
@@ -2765,7 +2829,7 @@ class CodeBatchUploadCSVView(APIView):
                             "status":         row_status,
                             "payment_status": row_payment,
                             "customer_email": row_customer_email or None,
-                            "customer_name":  row_customer_name or None,
+                            "customer_name":  row_customer_name  or None,
                             "assigned_date":  row_assigned_date,
                         }
                     )
@@ -2777,38 +2841,8 @@ class CodeBatchUploadCSVView(APIView):
                     import traceback
                     traceback.print_exc()
 
-        else:
-            # FORMAT B: Assignment format (no changes needed here)
-            BatchSerial.objects.filter(batch=batch).delete()
-
-            for row_num, row in enumerate(rows, start=2):
-                serial = str(row.get("serial_number") or row.get("sn") or "").strip()
-                if not serial or serial == 'nan':
-                    errors.append(f"Row {row_num}: serial_number is empty — skipped.")
-                    continue
-
-                raw_status     = str(row.get("status", "not sold")).strip().lower()
-                payment_status = str(row.get("payment_status", "not_applicable")).strip().lower()
-                customer_email = str(row.get("customer_email", "")).strip()
-                customer_name  = str(row.get("customer_name", "")).strip()
-                assigned_date  = self._parse_date(row.get("assigned_date", ""))
-
-                try:
-                    BatchSerial.objects.create(
-                        batch          = batch,
-                        serial_number  = serial,
-                        status         = raw_status,
-                        payment_status = payment_status,
-                        customer_email = customer_email or None,
-                        customer_name  = customer_name  or None,
-                        assigned_date  = assigned_date,
-                    )
-                    imported += 1
-                except Exception as exc:
-                    errors.append(f"Row {row_num} ({serial}): {exc}")
-
         return Response({
-            "imported": imported, 
+            "imported": imported,
             "errors": errors,
             "qr_codes_extracted": len(qr_codes)
         }, status=status.HTTP_200_OK)
@@ -2916,3 +2950,50 @@ class SendBulkExpirationEmailsView(APIView):
             {"sent": sent_count, "failed": failed_count}, 
             status=status.HTTP_200_OK
         )
+
+class PublicCodeSearchView(APIView):
+    # This allows unauthenticated users (customers) to access this specific view
+    permission_classes = [permissions.AllowAny] 
+
+    def post(self, request):
+        serial_number = request.data.get("serial_number", "").strip()
+        
+        if not serial_number:
+            return Response({"error": "Please enter a valid serial number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. Check the payment status in BatchSerial
+        batch_serial = BatchSerial.objects.filter(serial_number=serial_number).first()
+        
+        if not batch_serial:
+            return Response({"error": "Serial number not found in our records."}, status=status.HTTP_404_NOT_FOUND)
+
+        payment_status = str(batch_serial.payment_status).strip().lower()
+
+        # 2. Enforce the payment rules
+        if payment_status == 'overdue':
+            return Response(
+                {"error": "Your code is expired as we have not received any payment from you in 3 months now."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        elif payment_status != 'paid':
+             return Response(
+                {"error": f"Activation code locked. Current payment status: {payment_status.title().replace('_', ' ')}."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 3. If paid, fetch and return the code
+        activation = ActivationCode.objects.filter(receiver_serial=serial_number).first()
+        
+        if not activation:
+            return Response(
+                {"error": "Activation code has not been generated for this device yet."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "success": True,
+            "serial_number": serial_number,
+            "code": activation.code,
+            "expiry_date": activation.expiry_date,
+            "customer_name": batch_serial.customer_name
+        }, status=status.HTTP_200_OK)

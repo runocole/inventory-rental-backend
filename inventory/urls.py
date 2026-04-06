@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     EmailLoginView, AddStaffView, MonthlyRevenueView, PaymentSummaryView, ResetSaleView, SaveReceiverCodeView, SimulateInactivityView, StaffListView,ReceiverCodeManagementView,
     ToolListCreateView, ToolDetailView, EquipmentTypeListView, EquipmentTypeDetailView,
-    SaleListCreateView, SaleDetailView,CodeBatchListCreateView,CodeBatchItemsView,
+    SaleListCreateView, SaleDetailView,CodeBatchListCreateView,CodeBatchItemsView,PublicCodeSearchView,
     PaymentListCreateView, PaymentDetailView,CodeBatchUploadCSVView,CodeBatchDownloadCSVView,
     DashboardSummaryView, AddCustomerView, CustomerListView, send_sale_email, 
     SupplierListView, SupplierDetailView, equipment_by_invoice,
@@ -73,4 +73,5 @@ urlpatterns = [
     path("code-batches/<int:pk>/items/", CodeBatchItemsView.as_view(), name="code-batch-items"),
     path('debug/simulate-inactivity/', SimulateInactivityView.as_view(), name='simulate-inactivity'),
     path('debug/reset-sale/', ResetSaleView.as_view(), name='reset-sale'),
+    path('public/search-code/', PublicCodeSearchView.as_view(), name='public-search-code'),
 ]
