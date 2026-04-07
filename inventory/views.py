@@ -2805,8 +2805,14 @@ class CodeBatchUploadCSVView(APIView):
                                 row_status = 'active'
 
                             # Use sale payment status if not set
-                            if not row_payment or row_payment == 'not_applicable':
-                                row_payment = sale_record.payment_status or row_payment
+                            sale_status = (sale_record.payment_status or '').lower().strip()
+                            status_map = {
+                                'completed':   'completed',
+                                'ongoing':     'ongoing',
+                                'overdue':     'overdue',
+                            }
+                            # Always map from sale — Excel status is less reliable than live DB status
+                            row_payment = status_map.get(sale_status, sale_status or row_payment)
 
                     # Save or update activation code
                     ActivationCode.objects.update_or_create(
@@ -2952,48 +2958,81 @@ class SendBulkExpirationEmailsView(APIView):
         )
 
 class PublicCodeSearchView(APIView):
-    # This allows unauthenticated users (customers) to access this specific view
-    permission_classes = [permissions.AllowAny] 
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         serial_number = request.data.get("serial_number", "").strip()
-        
+
         if not serial_number:
-            return Response({"error": "Please enter a valid serial number."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Please enter a valid serial number."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # 1. Check the payment status in BatchSerial
-        batch_serial = BatchSerial.objects.filter(serial_number=serial_number).first()
-        
+        # 1. Find the serial in BatchSerial
+        batch_serial = BatchSerial.objects.filter(
+            serial_number=serial_number
+        ).first()
+
         if not batch_serial:
-            return Response({"error": "Serial number not found in our records."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Serial number not found in our records."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        payment_status = str(batch_serial.payment_status).strip().lower()
+        payment_status = str(batch_serial.payment_status or "").strip().lower()
 
-        # 2. Enforce the payment rules
+        # 2. Enforce payment rules
+        # OVERDUE — payment has lapsed for 90 days or due date passed
         if payment_status == 'overdue':
             return Response(
-                {"error": "Your code is expired as we have not received any payment from you in 3 months now."},
+                {"error": "Your activation code has been locked. We have not received payment from you in over 3 months. Please contact support to restore access."},
                 status=status.HTTP_403_FORBIDDEN
             )
-        elif payment_status != 'paid':
-             return Response(
+
+        # NOT YET PAID / UNKNOWN — serial exists but no payment recorded
+        locked_statuses = ['not_applicable', 'not applicable', 'pending', '', 'unknown']
+        if payment_status in locked_statuses:
+            return Response(
+                {"error": f"Activation code locked. Current payment status: {payment_status.title().replace('_', ' ') or 'Unknown'}."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # ONGOING — customer is on an active installment plan, code is accessible
+        # PAID / COMPLETED — fully paid, code is accessible
+        # Both ongoing and paid/completed get the code
+        allowed_statuses = ['paid', 'ongoing', 'completed', 'fully-paid', 'fully_paid']
+        if payment_status not in allowed_statuses:
+            return Response(
                 {"error": f"Activation code locked. Current payment status: {payment_status.title().replace('_', ' ')}."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # 3. If paid, fetch and return the code
-        activation = ActivationCode.objects.filter(receiver_serial=serial_number).first()
-        
+        # 3. Fetch the activation code
+        activation = ActivationCode.objects.filter(
+            receiver_serial=serial_number
+        ).first()
+
         if not activation:
             return Response(
-                {"error": "Activation code has not been generated for this device yet."}, 
+                {"error": "Activation code has not been generated for this device yet."},
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # 4. Return the code with status context
+        status_display = {
+            'paid':       'Fully Paid',
+            'completed':  'Fully Paid',
+            'fully-paid': 'Fully Paid',
+            'fully_paid': 'Fully Paid',
+            'ongoing':    'Ongoing — Installment Plan Active',
+        }.get(payment_status, payment_status.title())
+
         return Response({
-            "success": True,
-            "serial_number": serial_number,
-            "code": activation.code,
-            "expiry_date": activation.expiry_date,
-            "customer_name": batch_serial.customer_name
+            "success":        True,
+            "serial_number":  serial_number,
+            "code":           activation.code,
+            "expiry_date":    activation.expiry_date,
+            "customer_name":  batch_serial.customer_name,
+            "payment_status": status_display,
         }, status=status.HTTP_200_OK)

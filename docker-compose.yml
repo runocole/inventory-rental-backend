@@ -14,3 +14,5 @@ services:
 
 volumes:
   postgres_data:
+    external: true                               # <--- ADD THIS
+    name:  inventory-rental-backend_postgres_data        # <--- ADD THIS (Use the exact name from Docker Desktop)
