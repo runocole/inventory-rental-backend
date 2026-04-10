@@ -57,6 +57,27 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 # ----------------------------
+# DISPLAY STAFF (no login access)
+# ----------------------------
+class DisplayStaff(models.Model):
+    """
+    Staff members for sales attribution only.
+    No login, no password — just a name and email
+    that appears in the sales form dropdown.
+    """
+    name  = models.CharField(max_length=100, unique=True)
+    email = models.EmailField(blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+# ----------------------------
 #  CUSTOMERS
 # ----------------------------
 class Customer(models.Model):
@@ -621,6 +642,62 @@ class SaleItem(models.Model):
         return self.sale.is_overdue
     
     
+
+# ----------------------------
+# QUOTATIONS
+# ----------------------------
+class QuotationItem(models.Model):
+    quotation = models.ForeignKey(
+        'Quotation', on_delete=models.CASCADE, related_name='items'
+    )
+    equipment = models.CharField(max_length=255)
+    equipment_type = models.CharField(max_length=100, blank=True, null=True)
+    category = models.CharField(max_length=100, blank=True, null=True)
+    cost = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity = models.IntegerField(default=1)
+
+    def __str__(self):
+        return f"{self.equipment} x{self.quantity}"
+
+
+class Quotation(models.Model):
+    quote_number = models.CharField(max_length=100, unique=True, blank=True)
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    state = models.CharField(max_length=100, blank=True, null=True)
+    staff = models.CharField(max_length=100, blank=True, null=True)
+    total_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    payment_plan = models.CharField(max_length=100, blank=True, null=True)
+    initial_deposit = models.DecimalField(
+        max_digits=10, decimal_places=2, blank=True, null=True
+    )
+    payment_months = models.IntegerField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    date_created = models.DateField(auto_now_add=True)
+    valid_until = models.DateField(blank=True, null=True)
+    is_converted = models.BooleanField(default=False)
+    converted_sale_id = models.IntegerField(blank=True, null=True)
+    bank_name = models.CharField(max_length=100, default="Zenith Bank")
+    account_name = models.CharField(max_length=100, default="OTIC GEOSYSTEMS LTD")
+    account_number = models.CharField(max_length=50, default="1015175251")
+    tin_number = models.CharField(max_length=50, default="31413107-0001")
+    footer_note = models.TextField(default="This is a quotation only and does not constitute a final invoice.")
+
+    class Meta:
+        ordering = ['-date_created', '-id']
+
+    def __str__(self):
+        return f"{self.quote_number} — {self.name}"
+
+    def save(self, *args, **kwargs):
+        if not self.quote_number:
+            import random, string
+            self.quote_number = f"QUO-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+        super().save(*args, **kwargs)
+
+
 # ----------------------------
 #  PAYMENTS
 # ----------------------------

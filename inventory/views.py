@@ -3,11 +3,11 @@ from decimal import Decimal
 from django.db import models, transaction
 from rest_framework import generics, permissions, status
 from django.contrib.auth import get_user_model
-from .models import Tool, Payment, Sale, Customer, EquipmentType, Supplier, SaleItem, CodeBatch, ActivationCode, CodeAssignmentLog, BatchSerial
+from .models import Tool, Payment, Sale, Customer, EquipmentType, Supplier, SaleItem, CodeBatch, ActivationCode, CodeAssignmentLog, BatchSerial, Quotation, DisplayStaff
 from .serializers import (
     UserSerializer, ToolSerializer, EquipmentTypeSerializer,
     PaymentSerializer, SaleSerializer, CustomerSerializer, SupplierSerializer, CustomerOwingSerializer,
-    CodeBatchSerializer, ActivationCodeSerializer, CodeAssignmentLogSerializer
+    CodeBatchSerializer, ActivationCodeSerializer, CodeAssignmentLogSerializer, QuotationSerializer, DisplayStaffSerializer
 )
 from rest_framework.pagination import PageNumberPagination
 from .permissions import IsAdminOrStaff, IsOwnerOrAdmin
@@ -127,6 +127,19 @@ class StaffSalesView(APIView):
         serializer = SaleSerializer(sales, many=True, context={"request": request})
         return Response(serializer.data)
 
+class DisplayStaffListCreateView(generics.ListCreateAPIView):
+    serializer_class = DisplayStaffSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return DisplayStaff.objects.all()
+
+
+class DisplayStaffDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = DisplayStaffSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = DisplayStaff.objects.all()
+    
 
 # ----------------------------
 # AUTHENTICATION
@@ -302,9 +315,9 @@ class SyncCustomerFinancialsView(APIView):
 
             for customer in customers:
                 if customer.phone:
-                    customer_sales = Sale.objects.filter(phone=customer.phone)
+                    customer_sales = Sale.objects.exclude(payment_status='pending').filter(phone=customer.phone)
                 elif customer.name:
-                    customer_sales = Sale.objects.filter(name__iexact=customer.name)
+                    customer_sales = Sale.objects.exclude(payment_status='pending').filter(name__iexact=customer.name)
                 else:
                     skipped += 1
                     continue
@@ -326,7 +339,7 @@ class SyncCustomerFinancialsView(APIView):
                     sale_status = (sale.payment_status or '').lower()
                     if sale_status in ['completed', 'paid', 'fully-paid']:
                         amount_paid += Decimal(str(sale.total_cost or '0'))
-                    elif sale_status in ['ongoing', 'overdue', 'pending', 'installment']:
+                    elif sale_status in ['ongoing', 'overdue', 'installment']:
                         initial = Decimal(str(sale.initial_deposit or '0'))
                         logged = Payment.objects.filter(
                             sale=sale
@@ -365,9 +378,9 @@ class SyncCustomerFinancialsView(APIView):
                 today = timezone.now().date()
 
                 fresh_sales = list(
-                    Sale.objects.filter(phone=customer.phone)
+                    Sale.objects.exclude(payment_status='pending').filter(phone=customer.phone)
                     if customer.phone
-                    else Sale.objects.filter(name__iexact=customer.name)
+                    else Sale.objects.exclude(payment_status='pending').filter(name__iexact=customer.name)
                 )
 
                 active_sales = [
@@ -411,9 +424,9 @@ class SyncCustomerFinancialsView(APIView):
                         Sale.objects.filter(pk=sale.pk).update(payment_status='ongoing')
 
                     if customer.phone:
-                        customer_sales = Sale.objects.filter(phone=customer.phone)
+                        customer_sales = Sale.objects.exclude(payment_status='pending').filter(phone=customer.phone)
                     else:
-                        customer_sales = Sale.objects.filter(name__iexact=customer.name)
+                        customer_sales = Sale.objects.exclude(payment_status='pending').filter(name__iexact=customer.name)
 
                     has_overdue = customer_sales.filter(
                         payment_status='overdue'
@@ -467,65 +480,65 @@ class SyncCustomerFinancialsView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-class SimulateInactivityView(APIView):
-    """
-    POST /debug/simulate-inactivity/
-    TEST ONLY — simulates 90+ day inactivity on a sale.
-    Remove this endpoint before going to production.
+# class SimulateInactivityView(APIView):
+#     """
+#     POST /debug/simulate-inactivity/
+#     TEST ONLY — simulates 90+ day inactivity on a sale.
+#     Remove this endpoint before going to production.
 
-    Body: { "sale_id": 6, "days_inactive": 91 }
-    """
-    permission_classes = [permissions.IsAuthenticated]
+#     Body: { "sale_id": 6, "days_inactive": 91 }
+#     """
+#     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request):
-        from datetime import timedelta
-        sale_id = request.data.get('sale_id')
-        days_inactive = int(request.data.get('days_inactive', 91))
+#     def post(self, request):
+#         from datetime import timedelta
+#         sale_id = request.data.get('sale_id')
+#         days_inactive = int(request.data.get('days_inactive', 91))
 
-        if not sale_id:
-            return Response({"error": "sale_id required"}, status=400)
+#         if not sale_id:
+#             return Response({"error": "sale_id required"}, status=400)
 
-        try:
-            sale = Sale.objects.get(pk=sale_id)
+#         try:
+#             sale = Sale.objects.get(pk=sale_id)
 
-            # 1. Backdate date_sold
-            fake_date = timezone.now().date() - timedelta(days=days_inactive)
-            Sale.objects.filter(pk=sale_id).update(date_sold=fake_date)
+#             # 1. Backdate date_sold
+#             fake_date = timezone.now().date() - timedelta(days=days_inactive)
+#             Sale.objects.filter(pk=sale_id).update(date_sold=fake_date)
 
-            # 2. Delete all Payment records for this sale
-            # so last_activity falls back to date_sold
-            deleted_count, _ = Payment.objects.filter(sale=sale).delete()
+#             # 2. Delete all Payment records for this sale
+#             # so last_activity falls back to date_sold
+#             deleted_count, _ = Payment.objects.filter(sale=sale).delete()
 
-            return Response({
-                "success": True,
-                "sale_id": sale_id,
-                "date_sold_set_to": str(fake_date),
-                "payments_deleted": deleted_count,
-                "message": f"Sale {sale_id} now has {days_inactive} days of inactivity. Click Sync Data to trigger overdue."
-            })
+#             return Response({
+#                 "success": True,
+#                 "sale_id": sale_id,
+#                 "date_sold_set_to": str(fake_date),
+#                 "payments_deleted": deleted_count,
+#                 "message": f"Sale {sale_id} now has {days_inactive} days of inactivity. Click Sync Data to trigger overdue."
+#             })
 
-        except Sale.DoesNotExist:
-            return Response({"error": f"Sale {sale_id} not found"}, status=404)
+#         except Sale.DoesNotExist:
+#             return Response({"error": f"Sale {sale_id} not found"}, status=404)
 
-class ResetSaleView(APIView):
-    """
-    POST /debug/reset-sale/
-    TEST ONLY — resets a sale's date_sold back to today.
-    """
-    permission_classes = [permissions.IsAuthenticated]
+# class ResetSaleView(APIView):
+#     """
+#     POST /debug/reset-sale/
+#     TEST ONLY — resets a sale's date_sold back to today.
+#     """
+#     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request):
-        sale_id = request.data.get('sale_id')
-        if not sale_id:
-            return Response({"error": "sale_id required"}, status=400)
-        try:
-            Sale.objects.filter(pk=sale_id).update(
-                date_sold=timezone.now().date(),
-                payment_status='ongoing'
-            )
-            return Response({"success": True, "message": f"Sale {sale_id} reset to today."})
-        except Sale.DoesNotExist:
-            return Response({"error": f"Sale {sale_id} not found"}, status=404)
+#     def post(self, request):
+#         sale_id = request.data.get('sale_id')
+#         if not sale_id:
+#             return Response({"error": "sale_id required"}, status=400)
+#         try:
+#             Sale.objects.filter(pk=sale_id).update(
+#                 date_sold=timezone.now().date(),
+#                 payment_status='ongoing'
+#             )
+#             return Response({"success": True, "message": f"Sale {sale_id} reset to today."})
+#         except Sale.DoesNotExist:
+#             return Response({"error": f"Sale {sale_id} not found"}, status=404)
 
 # ----------------------------
 # TOOLS
@@ -629,124 +642,6 @@ class ToolGroupedListView(APIView):
         
         return Response(result)
 
-# NEW: Assign random tool from group
-# class ToolAssignRandomFromGroupView(APIView):
-#     permission_classes = [permissions.IsAuthenticated]
-    
-#     def post(self, request):
-#         tool_name = request.data.get('tool_name')
-#         category = request.data.get('category')
-        
-#         if not tool_name:
-#             return Response({"error": "Tool name is required."}, status=status.HTTP_400_BAD_REQUEST)
-        
-#         # Find all available tools with this name and category that have enough serials
-#         available_tools = Tool.objects.filter(
-#             name=tool_name, 
-#             category=category,
-#             stock__gt=0,
-#             is_enabled=True
-#         )
-        
-#         # === ADD YOUR COMBO LOGIC HERE ===
-#         # Check if this is a combo equipment type
-#         if "combo" in tool_name.lower():
-#             # For combo, we need to assign both base and rover equipment
-#             base_tools = Tool.objects.filter(
-#                 name__icontains="base only",  # Adjust based on your actual tool names
-#                 category=category,
-#                 stock__gt=0,
-#                 is_enabled=True
-#             )
-#             rover_tools = Tool.objects.filter(
-#                 name__icontains="rover only",  # Adjust based on your actual tool names  
-#                 category=category,
-#                 stock__gt=0,
-#                 is_enabled=True
-#             )
-            
-#             if not base_tools or not rover_tools:
-#                 return Response(
-#                     {"error": "Complete base and rover sets not available for combo."},
-#                     status=status.HTTP_404_NOT_FOUND
-#                 )
-            
-#             # Get base serials (2 serials)
-#             base_tool = base_tools.first()
-#             base_serial_set = base_tool.get_random_serial_set()
-#             if not base_serial_set or len(base_serial_set) != 2:
-#                 return Response(
-#                     {"error": "Failed to get complete base serial set."},
-#                     status=status.HTTP_404_NOT_FOUND
-#                 )
-#             base_tool.decrease_stock()
-            
-#             # Get rover serials (2 serials)  
-#             rover_tool = rover_tools.first()
-#             rover_serial_set = rover_tool.get_random_serial_set()
-#             if not rover_serial_set or len(rover_serial_set) != 2:
-#                 return Response(
-#                     {"error": "Failed to get complete rover serial set."},
-#                     status=status.HTTP_404_NOT_FOUND
-#                 )
-#             rover_tool.decrease_stock()
-            
-#             # Combine all serials
-#             all_serials = base_serial_set + rover_serial_set
-            
-#             return Response({
-#                 "assigned_tool_id": f"combo_{base_tool.id}_{rover_tool.id}",
-#                 "tool_name": tool_name,
-#                 "serial_set": all_serials,  # This should be 4 serials total
-#                 "serial_count": len(all_serials),
-#                 "set_type": "Base & Rover Combo",
-#                 "cost": str(float(base_tool.cost) + float(rover_tool.cost)),
-#                 "description": "Base & Rover Combo Set",
-#                 "remaining_stock": min(base_tool.stock, rover_tool.stock),
-#                 "import_invoice": base_tool.invoice_number  # Use base tool invoice
-#             })
-        
-#         # === NORMAL LOGIC FOR NON-COMBO EQUIPMENT ===
-#         # Filter tools that have enough serials for a complete set
-#         tools_with_enough_serials = []
-#         for tool in available_tools:
-#             set_count = tool.get_serial_set_count()
-#             if tool.available_serials and len(tool.available_serials) >= set_count:
-#                 tools_with_enough_serials.append(tool)
-        
-#         if not tools_with_enough_serials:
-#             return Response(
-#                 {"error": f"No complete {tool_name} sets available in stock."},
-#                 status=status.HTTP_404_NOT_FOUND
-#             )
-        
-#         # Select a random tool from available ones
-#         import random
-#         selected_tool = random.choice(tools_with_enough_serials)
-        
-#         # Get a complete serial SET (2 or 4 serials depending on equipment type)
-#         serial_set = selected_tool.get_random_serial_set()
-        
-#         if not serial_set:
-#             return Response(
-#                 {"error": "Failed to get complete serial set from selected tool."},
-#                 status=status.HTTP_404_NOT_FOUND
-#             )
-        
-#         # Update the stock count
-#         selected_tool.decrease_stock()
-        
-#         return Response({
-#             "assigned_tool_id": selected_tool.id,
-#             "tool_name": selected_tool.name,
-#             "serial_set": serial_set,  # This is now an ARRAY of serials
-#             "serial_count": len(serial_set),
-#             "set_type": selected_tool.description,
-#             "cost": str(selected_tool.cost),
-#             "description": selected_tool.description,
-#             "remaining_stock": selected_tool.stock,
-#             "import_invoice": selected_tool.invoice_number
-#         })
 
 class ToolAssignRandomFromGroupView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -989,71 +884,6 @@ class SupplierDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SupplierSerializer
     permission_classes = [permissions.AllowAny]
 
-# ----------------------------
-# SALES
-# ----------------------------
-# class SaleListCreateView(generics.ListCreateAPIView):
-#     serializer_class = SaleSerializer
-#     permission_classes = [permissions.IsAuthenticated]
-
-#     def get_queryset(self):
-#         user = self.request.user
-#         if user.role == "staff":
-#             return Sale.objects.filter(staff=user).order_by("-date_sold")
-#         elif user.role == "admin":
-#             return Sale.objects.all().order_by("-date_sold")
-#         return Sale.objects.none()
-
-#     def perform_create(self, serializer):
-#         # Get import_invoice from request data
-#         import_invoice = self.request.data.get('import_invoice')
-        
-#         # Save the sale with staff and import_invoice
-#         sale = serializer.save(
-#             staff=self.request.user,
-#             import_invoice=import_invoice
-#         )
-        
-#         # FIXED: Also update sale items with serial_set data
-#         if sale.items.exists():
-#             items_data = self.request.data.get('items', [])
-#             for i, item in enumerate(sale.items.all()):
-#                 if i < len(items_data):
-#                     item_data = items_data[i]
-#                     # Save serial_set to the item
-#                     serial_set = item_data.get('serial_set')
-#                     if serial_set:
-#                         # Convert serial_set array to serial_number field
-#                         if isinstance(serial_set, list) and len(serial_set) > 0:
-#                             if len(serial_set) == 1:
-#                                 item.serial_number = serial_set[0]
-#                             else:
-#                                 item.serial_number = json.dumps(serial_set)
-#                         item.save()
-        
-#         # Also update sale items with import_invoice if provided
-#         if import_invoice and sale.items.exists():
-#             sale.items.all().update(import_invoice=import_invoice)
-
-
-# class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
-#     serializer_class = SaleSerializer
-#     permission_classes = [permissions.IsAuthenticated]
-
-#     def get_queryset(self):
-#         user = self.request.user
-#         if user.role == "staff":
-#             return Sale.objects.filter(staff=user)
-#         elif user.role == "admin":
-#             return Sale.objects.all()
-#         return Sale.objects.none()
-
-#     def perform_update(self, serializer):
-#         user = self.request.user
-#         instance = self.get_object()
-#         if user.role == "staff" and instance.staff != user:
-#             raise PermissionDenied("You can only edit your own sales.")
-#         return super().perform_update(serializer)
 
 class SaleListCreateView(generics.ListCreateAPIView):
     serializer_class = SaleSerializer
@@ -1067,10 +897,20 @@ class SaleListCreateView(generics.ListCreateAPIView):
         # ✅ CHANGED: Now exactly 90 days (3 months)
         ninety_days_ago = today - timedelta(days=90)
         
-        # Base Queryset - Annotate with the most recent payment date to enable accurate filtering
+        # Exclude drafts (pending) from default view unless explicitly requested
+        show_drafts = self.request.query_params.get('status', '').lower() == 'pending'
+
+        show_drafts = self.request.query_params.get('status', '').lower() == 'pending'
+
         queryset = Sale.objects.prefetch_related('items').annotate(
             last_payment_date=Max('payment__payment_date')
         ).order_by("-date_sold", "-id")
+
+        if not show_drafts:
+            queryset = queryset.exclude(payment_status='pending')
+
+        if not show_drafts:
+            queryset = queryset.exclude(payment_status='pending')       
         
         # --- 1. Role-Based Filtering ---
         if user.is_superuser or user.is_staff or getattr(user, 'role', '') == "admin":
@@ -1205,7 +1045,10 @@ class SaleListCreateView(generics.ListCreateAPIView):
         payment_plan = self.request.data.get('payment_plan', 'No')
 
         # 3. Apply status rules
-        if payment_plan == 'Yes':
+        explicit_status = str(self.request.data.get('payment_status', '')).strip().lower()
+        if explicit_status == 'pending':
+            new_status = 'pending'
+        elif payment_plan == 'Yes':
             new_status = 'ongoing'
         else:
             new_status = 'completed'
@@ -1250,41 +1093,6 @@ class SaleListCreateView(generics.ListCreateAPIView):
                     item.import_invoice = import_invoice
                 item.save()
 
-""" class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
-    serializer_class = SaleSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-        
-        if user.role == "staff":
-            return Sale.objects.filter(staff=user)
-        elif getattr(user, 'role', '') == "admin" or user.is_superuser:
-            return Sale.objects.all()
-        elif user.role == "customer":
-            query = Q()
-            if user.name:
-                query |= Q(name__iexact=user.name)
-            if user.phone:
-                query |= Q(phone=user.phone)
-                
-            if hasattr(user, 'customer') and user.customer:
-                if user.customer.name:
-                    query |= Q(name__iexact=user.customer.name)
-                if user.customer.phone:
-                    query |= Q(phone=user.customer.phone)
-            
-            if query:
-                return Sale.objects.filter(query)
-                
-        return Sale.objects.none()
-
-    def perform_update(self, serializer):
-        user = self.request.user
-        instance = self.get_object()
-        if user.role == "staff" and instance.staff != user:
-            raise PermissionDenied("You can only edit your own sales.")
-        return super().perform_update(serializer) """
 
 class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SaleSerializer
@@ -1319,6 +1127,33 @@ class SaleDetailView(generics.RetrieveUpdateDestroyAPIView):
                 return Sale.objects.filter(query)
                 
         return Sale.objects.none()
+
+    def perform_destroy(self, instance):
+        """
+        When a draft (pending) sale is deleted, restore all assigned
+        serials back to inventory before removing the sale record.
+        """
+        if instance.payment_status == 'pending':
+            import json
+            for item in instance.items.all():
+                if not item.serial_number:
+                    continue
+                # Parse serial_number — could be a single serial or JSON array
+                try:
+                    serial_set = json.loads(item.serial_number)
+                    if not isinstance(serial_set, list):
+                        serial_set = [item.serial_number]
+                except (json.JSONDecodeError, TypeError):
+                    serial_set = [item.serial_number]
+
+                # Find the tool and restore the serials
+                if item.tool:
+                    try:
+                        item.tool.restore_serials(serial_set)
+                    except Exception as e:
+                        print(f"Failed to restore serials for item {item.id}: {e}")
+
+        instance.delete()
 
     def perform_update(self, serializer):
         user = self.request.user
@@ -1361,6 +1196,179 @@ def send_sale_email(request):
         return Response({"message": "Email sent successfully!"})
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+    
+
+# ----------------------------
+# QUOTATIONS
+# ----------------------------
+class QuotationListCreateView(generics.ListCreateAPIView):
+    serializer_class = QuotationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        qs = Quotation.objects.all()
+        search = self.request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search) |
+                Q(quote_number__icontains=search) |
+                Q(phone__icontains=search)
+            )
+        return qs
+
+
+class QuotationDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = QuotationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Quotation.objects.all()
+
+
+class QuotationConvertView(APIView):
+    """
+    POST /api/quotations/<pk>/convert/
+    Converts a quotation to a real Sale — no inventory deduction,
+    just creates the Sale record so staff can then assign serials normally.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            quotation = Quotation.objects.get(pk=pk)
+        except Quotation.DoesNotExist:
+            return Response(
+                {"error": "Quotation not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if quotation.is_converted:
+            return Response(
+                {"error": "This quotation has already been converted to a sale."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Determine due date from payment months
+        due_date = None
+        if quotation.payment_months:
+            from datetime import date
+            from dateutil.relativedelta import relativedelta
+            due_date = date.today() + relativedelta(months=quotation.payment_months)
+
+        # Determine status
+        if quotation.payment_plan == 'Yes':
+            sale_status = 'ongoing'
+        else:
+            sale_status = 'completed'
+
+        # Create the Sale
+        import random, string
+        invoice_number = f"INV-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+
+        sale = Sale.objects.create(
+            name=quotation.name,
+            phone=quotation.phone or '',
+            state=quotation.state or '',
+            staff=quotation.staff or '',
+            total_cost=quotation.total_cost,
+            tax_amount=quotation.tax_amount,
+            payment_plan=quotation.payment_plan,
+            initial_deposit=quotation.initial_deposit,
+            payment_months=quotation.payment_months,
+            due_date=due_date,
+            payment_status=sale_status,
+            invoice_number=invoice_number,
+            date_sold=date.today(),
+        )
+
+        # Create SaleItems from QuotationItems (no serial assignment)
+        for qitem in quotation.items.all():
+            for _ in range(qitem.quantity):
+                SaleItem.objects.create(
+                    sale=sale,
+                    equipment=qitem.equipment,
+                    equipment_type=qitem.equipment_type or '',
+                    category=qitem.category or '',
+                    cost=qitem.cost,
+                )
+
+        # Mark quotation as converted
+        quotation.is_converted = True
+        quotation.converted_sale_id = sale.id
+        quotation.save()
+
+        return Response({
+            "success": True,
+            "sale_id": sale.id,
+            "invoice_number": sale.invoice_number,
+            "message": f"Quotation {quotation.quote_number} converted to sale {sale.invoice_number}.",
+        }, status=status.HTTP_201_CREATED)
+
+
+class QuotationSendEmailView(APIView):
+    """
+    POST /api/quotations/<pk>/send-email/
+    Sends the quotation summary to the customer email.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            quotation = Quotation.objects.get(pk=pk)
+        except Quotation.DoesNotExist:
+            return Response({"error": "Quotation not found."}, status=404)
+
+        if not quotation.email:
+            return Response(
+                {"error": "No email address on this quotation."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            from django.core.mail import send_mail
+            items_text = "\n".join([
+                f"  - {item.equipment} ({item.equipment_type or 'N/A'}) x{item.quantity} — NGN {item.cost:,.2f}"
+                for item in quotation.items.all()
+            ])
+            body = f"""Dear {quotation.name},
+
+Please find your quotation details below:
+
+Quotation Number: {quotation.quote_number}
+Date: {quotation.date_created}
+Valid Until: {quotation.valid_until or 'N/A'}
+
+Items:
+{items_text}
+
+Total: NGN {quotation.total_cost:,.2f}
+{f'Initial Deposit: NGN {quotation.initial_deposit:,.2f}' if quotation.initial_deposit else ''}
+{f'Payment Duration: {quotation.payment_months} months' if quotation.payment_months else ''}
+
+{quotation.notes or ''}
+
+Bank: Zenith Bank
+Account Name: OTIC GEOSYSTEMS LTD
+Account NO: 1015175251
+
+Thank you for your interest.
+
+OTIC GEOSYSTEMS LTD
+"""
+            send_mail(
+                subject=f"Quotation {quotation.quote_number} from OTIC GEOSYSTEMS LTD",
+                message=body,
+                from_email=None,
+                recipient_list=[quotation.email],
+                fail_silently=False,
+            )
+            return Response({"success": True, "message": f"Quotation sent to {quotation.email}."})
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to send email: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+
 # ----------------------------
 # DASHBOARD SUMMARY
 # ----------------------------
@@ -1370,8 +1378,8 @@ class DashboardSummaryView(APIView):
     def get(self, request):
         user = request.user
 
-        total_sales = Sale.objects.count()
-        total_revenue = Sale.objects.aggregate(total=Sum("total_cost"))["total"] or 0
+        total_sales = Sale.objects.exclude(payment_status='pending').count()
+        total_revenue = Sale.objects.exclude(payment_status='pending').aggregate(total=Sum("total_cost"))["total"] or 0
         tools_count = Tool.objects.filter(stock__gt=0).count()
         staff_count = User.objects.filter(role="staff").count()
         active_customers = Customer.objects.filter(is_activated=True).count()
@@ -1379,7 +1387,7 @@ class DashboardSummaryView(APIView):
         today = timezone.now()
         month_start = today.replace(day=1)
         mtd_revenue = (
-            Sale.objects.filter(date_sold__gte=month_start)
+            Sale.objects.exclude(payment_status='pending').filter(date_sold__gte=month_start)
             .aggregate(total=Sum("total_cost"))
             .get("total")
             or 0
@@ -1420,7 +1428,7 @@ class DashboardSummaryView(APIView):
         )
 
         # Recent sales
-        recent_sales = Sale.objects.prefetch_related('items').order_by('-date_sold')[:10]
+        recent_sales = Sale.objects.exclude(payment_status='pending').prefetch_related('items').order_by('-date_sold')[:10]
         recent_sales_data = []
         for sale in recent_sales:
             first_item = sale.items.first()
@@ -1506,7 +1514,7 @@ class MonthlyRevenueView(APIView):
 
         # Group all sales by month
         monthly_data = (
-            Sale.objects
+            Sale.objects.exclude(payment_status='pending')
             .annotate(month=TruncMonth('date_sold'))
             .values('month')
             .annotate(
@@ -1528,11 +1536,11 @@ class MonthlyRevenueView(APIView):
                     'sales_count': entry['sales_count'] or 0,
                 })
 
-        total_all_time = Sale.objects.aggregate(
+        total_all_time = Sale.objects.exclude(payment_status='pending').aggregate(
             total=Sum('total_cost')
         )['total'] or 0
 
-        total_sales_count = Sale.objects.count()
+        total_sales_count = Sale.objects.exclude(payment_status='pending').count()
 
         return Response({
             'months': months_list,
@@ -1588,106 +1596,6 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsOwnerOrAdmin]
 
 
-""" class PaymentSummaryView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        # 1. Grab all the query parameters sent by React
-        search_query = request.query_params.get('search', '').strip()
-        status_filter = request.query_params.get('status', 'all').lower()
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
-
-        # ── Summary Cards (Always calculates total database amounts) ──
-        all_sales = Sale.objects.all()
-
-        safe_cost = Coalesce(F('total_cost'), 0.0, output_field=FloatField())
-        safe_deposit = Coalesce(F('initial_deposit'), 0.0, output_field=FloatField())
-
-        aggregations = all_sales.aggregate(
-            money_received=Sum(
-                Case(
-                    When(payment_status__iexact='completed', then=safe_cost),
-                    When(payment_status__iexact='ongoing', then=safe_deposit),
-                    default=0.0,
-                    output_field=FloatField()
-                )
-            ),
-            receivables=Sum(
-                Case(
-                    When(payment_status__iexact='ongoing', then=safe_cost - safe_deposit),
-                    default=0.0,
-                    output_field=FloatField()
-                )
-            )
-        )
-
-        money_received = aggregations["money_received"] or 0
-        receivables = aggregations["receivables"] or 0
-        total_revenue = money_received + receivables
-
-        pending_sales = all_sales.filter(payment_status__in=["pending", "installment"])
-        pending_amount = pending_sales.aggregate(total=Sum("total_cost"))["total"] or 0
-        
-        overdue_customers = Customer.objects.filter(status="overdue")
-        overdue_amount = overdue_customers.aggregate(total=Sum("amount_left"))["total"] or 0
-
-        # ── Backend Filtering (The Speed Fix!) ──
-        sales_query = all_sales.prefetch_related("items").order_by("-date_sold", "-id")
-
-        if search_query:
-            sales_query = sales_query.filter(
-                Q(name__icontains=search_query) |
-                Q(phone__icontains=search_query) |
-                Q(invoice_number__icontains=search_query) |
-                Q(items__equipment__icontains=search_query)
-            ).distinct()
-
-        if status_filter and status_filter != 'all':
-            sales_query = sales_query.filter(payment_status__iexact=status_filter)
-
-        if start_date:
-            sales_query = sales_query.filter(date_sold__gte=start_date)
-        if end_date:
-            sales_query = sales_query.filter(date_sold__lte=end_date)
-
-        # ── Backend Pagination (Only processes 10 items instead of thousands) ──
-        paginator = StandardResultsSetPagination()
-        paginated_sales = paginator.paginate_queryset(sales_query, request, view=self)
-
-        rows = []
-        for sale in paginated_sales:
-            items_list = list(sale.items.values("equipment", "equipment_type"))
-            rows.append({
-                "payment_id":     sale.invoice_number,
-                "invoice_number": sale.invoice_number,
-                "customer_name":  sale.name,
-                "customer_phone": sale.phone,
-                "items":          items_list,
-                "amount":         str(sale.total_cost),
-                "date":           sale.date_sold.strftime("%Y-%m-%d") if sale.date_sold else "—",
-                "payment_plan":   sale.payment_plan or "Full Payment",
-                "payment_status": sale.payment_status,
-                "state":          sale.state or "—",
-            })
-
-        return Response({
-            "summary": {
-                "total_revenue":   float(total_revenue),
-                "receivables":     float(receivables),
-                "pending_amount":  float(pending_amount),
-                "pending_count":   pending_sales.count(),
-                "overdue_amount":  float(overdue_amount),
-                "overdue_count":   overdue_customers.count(),
-                "total_sales":     all_sales.count(),
-            },
-            "payments": rows,
-            "total_pages": paginator.page.paginator.num_pages, # Let React know how many pages exist
-            "current_page": paginator.page.number,
-            "total_items": paginator.page.paginator.count
-        }, status=status.HTTP_200_OK) """
-
-
 class PaymentSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1705,9 +1613,13 @@ class PaymentSummaryView(APIView):
 
         # ✅ ANNOTATE WITH LAST PAYMENT DATE
         # This is critical so the database knows exactly when the customer last handed you money
-        all_sales = Sale.objects.annotate(
+        # Exclude pending (draft) sales from all calculations and display
+        all_sales = Sale.objects.exclude(
+            payment_status='pending'
+        ).annotate(
             last_payment_date=Max('payment__payment_date')
         )
+
 
         safe_cost = Coalesce(F('total_cost'), 0.0, output_field=FloatField())
         safe_deposit = Coalesce(F('initial_deposit'), 0.0, output_field=FloatField())
@@ -1727,7 +1639,7 @@ class PaymentSummaryView(APIView):
             money_received=Sum(
                 Case(
                     When(payment_status__iexact='completed', then=safe_cost),
-                    When(payment_status__in=['ongoing', 'pending', 'installment'], then=safe_deposit),
+                    When(payment_status__in=['ongoing', 'installment'], then=safe_deposit),
                     When(payment_status__iexact='overdue', then=safe_deposit),
                     default=0.0,
                     output_field=FloatField()
@@ -1735,7 +1647,7 @@ class PaymentSummaryView(APIView):
             ),
             receivables=Sum(
                 Case(
-                    When(payment_status__in=['ongoing', 'pending', 'installment', 'overdue'], then=safe_cost - safe_deposit),
+                    When(payment_status__in=['ongoing', 'installment', 'overdue'], then=safe_cost - safe_deposit),
                     default=0.0,
                     output_field=FloatField()
                 )

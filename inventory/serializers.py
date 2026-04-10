@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import CodeAssignmentLog, Tool, EquipmentType, Payment, Sale, Customer, Supplier, SaleItem, CodeBatch, ActivationCode
+from .models import CodeAssignmentLog, Tool, EquipmentType, Payment, Sale, Customer, Supplier, SaleItem, CodeBatch, ActivationCode, Quotation, QuotationItem, DisplayStaff
 from django.utils import timezone
 from datetime import timedelta
 import json
@@ -25,6 +25,13 @@ class UserSerializer(serializers.ModelSerializer):
             user.set_unusable_password()
         user.save()
         return user
+
+class DisplayStaffSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DisplayStaff
+        fields = ['id', 'name', 'email', 'phone', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
 
 class ToolSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source="supplier.name", read_only=True)
@@ -173,7 +180,11 @@ class SaleSerializer(serializers.ModelSerializer):
 
     def get_payment_status(self, obj):
         db_status = (obj.payment_status or "ongoing").lower()
-        
+
+        # 0. If it's a draft (pending), return immediately — never override
+        if db_status == 'pending':
+            return 'pending'
+
         # 1. If it's fully paid, keep it that way
         if db_status in ['completed', 'paid', 'fully-paid']:
             return db_status
@@ -250,6 +261,47 @@ class SaleSerializer(serializers.ModelSerializer):
                 SaleItem.objects.create(sale=instance, **item_data)
                 
         return instance
+    
+class QuotationItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuotationItem
+        fields = ['id', 'equipment', 'equipment_type', 'category', 'cost', 'quantity']
+        read_only_fields = ['id']
+
+
+class QuotationSerializer(serializers.ModelSerializer):
+    items = QuotationItemSerializer(many=True)
+
+    class Meta:
+        model = Quotation
+        fields = [
+            'id', 'quote_number', 'name', 'phone', 'email', 'state',
+            'staff', 'total_cost', 'tax_amount', 'payment_plan',
+            'initial_deposit', 'payment_months', 'notes',
+            'date_created', 'valid_until', 'is_converted',
+            'converted_sale_id', 'items',
+            'bank_name', 'account_name', 'account_number', 'tin_number', 'footer_note',
+        ]
+        read_only_fields = ['id', 'quote_number', 'date_created']
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items', [])
+        quotation = Quotation.objects.create(**validated_data)
+        for item in items_data:
+            QuotationItem.objects.create(quotation=quotation, **item)
+        return quotation
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if items_data is not None:
+            instance.items.all().delete()
+            for item in items_data:
+                QuotationItem.objects.create(quotation=instance, **item)
+        return instance
+    
     
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:

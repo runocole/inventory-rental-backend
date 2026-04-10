@@ -26,9 +26,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-2$mt_=%bnl6p2f7fd+n0!t%j*q9k6spaw&qn&qw+ywxis2qwpz'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['oticgs.com', 'www.oticgs.com', '127.0.0.1', 'localhost']
 
 
 # Application definition
@@ -57,8 +57,8 @@ MIDDLEWARE = [
 ]
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    "https://oticgs.com",
+    "https://www.oticgs.com",
 ]
 
 ROOT_URLCONF = 'ims.urls'

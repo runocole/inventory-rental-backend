@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import (
-    EmailLoginView, AddStaffView, MonthlyRevenueView, PaymentSummaryView, ResetSaleView, SaveReceiverCodeView, SimulateInactivityView, StaffListView,ReceiverCodeManagementView,
+    DisplayStaffDetailView, DisplayStaffListCreateView, EmailLoginView, AddStaffView, MonthlyRevenueView, PaymentSummaryView, QuotationSendEmailView, SaveReceiverCodeView, StaffListView,ReceiverCodeManagementView,
     ToolListCreateView, ToolDetailView, EquipmentTypeListView, EquipmentTypeDetailView,
     SaleListCreateView, SaleDetailView,CodeBatchListCreateView,CodeBatchItemsView,PublicCodeSearchView,
     PaymentListCreateView, PaymentDetailView,CodeBatchUploadCSVView,CodeBatchDownloadCSVView,
@@ -8,13 +8,17 @@ from .views import (
     SupplierListView, SupplierDetailView, equipment_by_invoice,
     ToolGetRandomSerialView, ToolSoldSerialsView,  ToolGroupedListView, ToolAssignRandomFromGroupView, CustomerOwingDataView, ImportCodesView,
     AssignCodeView, CustomerCodesView, GenerateEmergencyCodeView, AvailableCodesView, ReceiversNeedingCodesView,
-    SendBulkExpirationEmailsView,StaffSalesView,SyncCustomerFinancialsView,
+    SendBulkExpirationEmailsView,StaffSalesView,SyncCustomerFinancialsView,QuotationListCreateView, QuotationDetailView, QuotationConvertView
 )
 urlpatterns = [
     # --- Auth ---
     path("auth/login/", EmailLoginView.as_view(), name="login"),
     path("auth/add-staff/", AddStaffView.as_view(), name="add-staff"),
     path("auth/staff/", StaffListView.as_view(), name="staff-list"),
+    
+    # --- Staff Management ---
+    path('staff/display/', DisplayStaffListCreateView.as_view(), name='display-staff-list'),
+    path('staff/display/<int:pk>/', DisplayStaffDetailView.as_view(), name='display-staff-detail'),
 
     # --- Customers ---
     path("customers/add", AddCustomerView.as_view(), name="add-customer"),
@@ -71,7 +75,13 @@ urlpatterns = [
     path("code-batches/<int:pk>/upload-csv/",CodeBatchUploadCSVView.as_view(),name="code-batch-upload-csv"),
     path("code-batches/<int:pk>/download-csv/",CodeBatchDownloadCSVView.as_view(),name="code-batch-download-csv"),
     path("code-batches/<int:pk>/items/", CodeBatchItemsView.as_view(), name="code-batch-items"),
-    path('debug/simulate-inactivity/', SimulateInactivityView.as_view(), name='simulate-inactivity'),
-    path('debug/reset-sale/', ResetSaleView.as_view(), name='reset-sale'),
+    # path('debug/simulate-inactivity/', SimulateInactivityView.as_view(), name='simulate-inactivity'),
+    # path('debug/reset-sale/', ResetSaleView.as_view(), name='reset-sale'),
     path('public/search-code/', PublicCodeSearchView.as_view(), name='public-search-code'),
+
+    # Quotations
+    path('quotations/', QuotationListCreateView.as_view(), name='quotation-list'),
+    path('quotations/<int:pk>/', QuotationDetailView.as_view(), name='quotation-detail'),
+    path('quotations/<int:pk>/convert/', QuotationConvertView.as_view(), name='quotation-convert'),
+    path('quotations/<int:pk>/send-email/', QuotationSendEmailView.as_view(), name='quotation-send-email'),
 ]
